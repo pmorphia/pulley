@@ -5,6 +5,10 @@ Pulley is the package manager for [Flywheel](../fw). It installs Flywheel packag
 [Hydrogen](https://github.com/Wednesware/Hydrogen) to resolve, download, and publish
 distributions. The registry is `wednesware.org` unless you choose another.
 
+Pulley installs Flywheel packages only. A Flywheel package has a `pulley.toml` at its root; a
+registry distribution, git repository, or directory without one (a Hydrogen distribution, for
+example) is refused with `is not a Flywheel package`, and nothing is recorded or installed.
+
 The command is `pulley`, also installed as `ppm`. (Both names are taken on PyPI, so the
 distribution is called `fw-pulley`.)
 

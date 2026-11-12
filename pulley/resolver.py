@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import manifest as manifests
-from .config import PulleyError, cache_dir
+from .config import MANIFEST, PulleyError, cache_dir
 from .registry import Registry, extract
 from .versions import Constraint, best
 
@@ -256,13 +256,20 @@ class Resolver:
             contents, commit = self.cache.git_package(url, rev, locked.get("commit", "") if locked else "")
             package.git, package.rev, package.commit, package.path = url, rev, commit, str(contents)
             registry_for_deps = self.default_registry
-        package.manifest = manifests.load(contents) if (contents / "pulley.toml").is_file() else None
+        # Pulley installs Flywheel packages only: a package has a pulley.toml at its root. Other
+        # distributions on a registry (Hydrogen's, say) are refused here, before anything is
+        # locked or installed.
+        if not (contents / MANIFEST).is_file():
+            raise PulleyError(
+                f"{package.label} is not a Flywheel package (it has no {MANIFEST}); "
+                "Pulley installs Flywheel packages only"
+            )
+        package.manifest = manifests.load(contents)
         self._drop_requests(package)
         self.packages[key] = package
-        if package.manifest:
-            # A package's dependencies resolve against its own default registry, if it names one.
-            own = package.manifest.registry or (registry_for_deps if kind == "registry" else self.default_registry)
-            self._add_requests(package, package.manifest.all_dependencies(dev=False), contents, own)
+        # A package's dependencies resolve against its own default registry, if it names one.
+        own = package.manifest.registry or (registry_for_deps if kind == "registry" else self.default_registry)
+        self._add_requests(package, package.manifest.all_dependencies(dev=False), contents, own)
         return package
 
     def resolve(self) -> dict[tuple, Package]:

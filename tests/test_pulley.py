@@ -155,6 +155,7 @@ class CommandTests(unittest.TestCase):
         (helpers / "helpers.fw").write_text('function hi returns string\n    return "hi"\nend\n')
         repo = self.root / "gitpkg"
         repo.mkdir()
+        (repo / "pulley.toml").write_text('[package]\nname = "gitpkg"\n')
         (repo / "gitpkg.fw").write_text('function tag returns string\n    return "git"\nend\n')
         git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -317,6 +318,33 @@ class CommandTests(unittest.TestCase):
         self.assertIn('distribution = "acme.textx"\nversion = "1.0.0"', lock)  # not named, not moved
         result = self.pulley("update", "nosuch", cwd=app, check=False)
         self.assertIn("not installed: nosuch", result.stderr)
+
+    def test_only_flywheel_packages_install(self):
+        # A distribution without a pulley.toml (a Hydrogen one, say) is not a Flywheel package.
+        archive = self.root / "registry" / "dstbs" / "acme" / "tool" / "1.0.0.tar.gz"
+        archive.parent.mkdir(parents=True)
+        with tarfile.open(archive, "w:gz") as tar:
+            for path, data in ((".sourcepkg", b'{"command": "tool"}'), ("tool.py", b"print(1)\n")):
+                info = tarfile.TarInfo(path)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        plain = self.root / "plain"
+        plain.mkdir()
+        (plain / "plain.fw").write_text('function hi returns string\n    return "hi"\nend\n')
+        app = self.root / "app"
+        self.pulley("new", app, "--author", "acme")
+        before = (app / "pulley.toml").read_text()
+        for args in (["acme.tool", "--registry", self.local], ["--path", "../plain"]):
+            with self.subTest(args=args):
+                result = self.pulley("add", *args, cwd=app, check=False)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("is not a Flywheel package", result.stderr)
+                self.assertEqual((app / "pulley.toml").read_text(), before)
+        self.assertFalse((app / ".flywheel-modules" / "tool").exists())
+        self.assertFalse((app / ".flywheel-modules" / "plain.link").exists())
+        result = self.pulley("install", "-g", "acme.tool", "--registry", self.local, check=False)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("is not a Flywheel package", result.stderr)
 
     def test_unsafe_archives_are_refused(self):
         def publish_raw(name, add_members):
