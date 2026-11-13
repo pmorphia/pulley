@@ -118,7 +118,7 @@ Downloads are verified against the SHA-256 that the registry publishes and cache
 
 | Command | Does |
 |---|---|
-| `pulley init [dir]`, `pulley new <dir>` | create `pulley.toml` (and a main module, a test, `.gitignore`) |
+| `pulley init [dir]`, `pulley new <dir>` | create `pulley.toml` (and a main module, a test, `.gitignore`); `--game` (or `--template game`) starts a game instead: [Aperture](https://github.com/pmorphia/aperture) as a dependency, a playable game loop, an `assets/` directory, and a `start` script |
 | `pulley add <package>...` | add dependencies (`author.name`, `author.name=^1.2`, `alias=author.name`, `--as name`, `--path dir`, `--git url --rev ref`, `-D` for dev) and install |
 | `pulley install` (`i`, `get`) | install everything in `pulley.toml`; with packages, same as `add`; `--production` skips dev-dependencies; `--frozen` |
 | `pulley install -g <package>` | install for the whole Flywheel installation |

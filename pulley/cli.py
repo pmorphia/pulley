@@ -17,6 +17,7 @@ from . import config as cfg
 from . import install as installer
 from . import manifest as manifests
 from . import package as packaging
+from . import tools
 from .config import LOCAL_MODULES, MANIFEST, PulleyError
 from .registry import Registry
 from .resolver import Resolver
@@ -50,50 +51,40 @@ def warn(message: str) -> None:
     print(_paint("warning: ", "33") + message, file=sys.stderr)
 
 
-# Targets: a project (.flywheel-modules) or the Flywheel installation (modules/) -------------
+# Targets: a project's dependencies (.flywheel-modules) ---------------------------------------
 
 class Target:
-    def __init__(self, global_: bool, create: bool = False):
-        self.global_ = global_
-        if global_:
-            self.modules = cfg.global_modules_dir()
-            self.directory = self.modules
-            if not (self.directory / MANIFEST).is_file():
-                if not create:
-                    raise PulleyError(f"nothing is installed globally (in {self.modules})")
-                self.directory.mkdir(parents=True, exist_ok=True)
-                (self.directory / MANIFEST).write_text(
-                    "# Packages installed for every Flywheel program of this installation.\n"
-                    "# Managed by `pulley install -g` and `pulley uninstall -g`.\n\n[dependencies]\n",
-                    encoding="utf-8",
-                )
-        else:
-            project = cfg.find_project()
-            if project is None:
-                raise PulleyError(f"no {MANIFEST} here or in a parent directory; run `pulley init` (or use -g)")
-            self.directory = project
-            self.modules = project / LOCAL_MODULES
+    """A project: its pulley.toml and its .flywheel-modules."""
+
+    def __init__(self):
+        project = cfg.find_project()
+        if project is None:
+            raise PulleyError(f"no {MANIFEST} here or in a parent directory; run `pulley init` "
+                              "(`pulley install author.name` installs a package's commands instead)")
+        self.directory = project
+        self.modules = project / LOCAL_MODULES
 
     def manifest(self) -> manifests.Manifest:
         return manifests.load(self.directory)
 
     def describe(self) -> str:
-        return f"the Flywheel installation ({self.modules})" if self.global_ else str(self.directory)
+        return str(self.directory)
 
 
 def _registry_name(args, manifest: manifests.Manifest | None = None) -> str:
     return getattr(args, "registry", None) or cfg.default_registry(manifest.registry if manifest else None)
 
 
-def install_target(target: Target, args, update: set[str] | None = None, update_all: bool = False) -> None:
-    manifest = target.manifest()
+def resolve_into(directory: Path, args, update: set[str] | None = None, update_all: bool = False,
+                 production: bool = False, copy_paths: bool = False, frozen: bool = False):
+    """Resolves the pulley.toml in `directory`, writes its lock, and fills its modules directory."""
+    manifest = manifests.load(directory)
     registry = _registry_name(args, manifest)
-    lock = installer.read_lock(target.directory)
-    production = getattr(args, "production", False) or target.global_
+    lock = installer.read_lock(directory)
     resolver = Resolver(manifest, registry, lock, update=update, update_all=update_all,
                         include_dev=not production, log=step if getattr(args, "verbose", False) else (lambda m: None))
     packages = resolver.resolve()
-    if getattr(args, "frozen", False):
+    if frozen:
         def state(entry_version, entry_commit, aliases):
             return (entry_version or None, entry_commit or None, tuple(sorted(aliases)))
         locked = {k: state(e.get("version"), e.get("commit"), e.get("aliases", [])) for k, e in lock.items()}
@@ -101,11 +92,22 @@ def install_target(target: Target, args, update: set[str] | None = None, update_
         if locked != resolved:
             raise PulleyError(f"{MANIFEST} and {cfg.LOCKFILE} disagree (run `pulley install` without --frozen)")
     else:
-        installer.write_lock(target.directory, packages)
-    counts = installer.sync(target.modules, packages, include_dev=not production, log=step)
+        installer.write_lock(directory, packages)
+    counts = installer.sync(directory / LOCAL_MODULES, packages, include_dev=not production, log=step,
+                            copy_paths=copy_paths)
+    return manifest, packages, counts
+
+
+def install_target(target: Target, args, update: set[str] | None = None, update_all: bool = False) -> None:
+    production = getattr(args, "production", False)
+    manifest, packages, counts = resolve_into(target.directory, args, update, update_all, production=production,
+                                              frozen=getattr(args, "frozen", False))
+    direct = [d.alias for d in manifest.all_dependencies(dev=not production)]
+    commands = tools.project_launchers(target.modules, direct, log=warn)
     total = sum(1 for p in packages.values() if not (p.dev and production))
     changes = ", ".join(f"{n} {kind}" for kind, n in counts.items() if n and kind != "unchanged")
-    done(f"{total} package(s) installed in {target.modules}" + (f" ({changes})" if changes else ""))
+    done(f"{total} package(s) installed in {target.modules}" + (f" ({changes})" if changes else "")
+         + (f"; {commands} command(s) for `pulley run`" if commands else ""))
 
 
 # Dependency specs given on the command line -------------------------------------------------
@@ -188,6 +190,8 @@ def cmd_init(args) -> None:
     main = args.main or f"{name.replace('-', '_')}.fw"
     (directory / MANIFEST).write_text(manifests.template(name, author, main), encoding="utf-8")
     created = [MANIFEST]
+    if getattr(args, "template", None) == "game":
+        created += _game_template(directory, name, main)
     if not (directory / main).exists():
         (directory / main).write_text(
             f"# {name}\n\nfunction greeting(string who) returns string\n    return \"Hello, {{who}}!\"\nend\n",
@@ -206,6 +210,75 @@ def cmd_init(args) -> None:
         ignore.write_text("\n".join(lines + [f"{LOCAL_MODULES}/"]) + "\n", encoding="utf-8")
         created.append(".gitignore")
     done(f"created {name} in {directory} ({', '.join(created)})")
+    if getattr(args, "template", None) == "game":
+        say(f"next: cd {args.directory or '.'} && pulley install && pulley run start")
+
+
+GAME_TEMPLATE = """# {name}: a game made with Aperture.
+#
+#     pulley run start        (or: flywheel run {main})
+#     flywheel build {main} -O3 -o {name}
+import aperture as ap
+import math
+
+ap.open("{name}", 1280, 720, ap.RESIZABLE)
+ap.virtual_size(640, 360)          # draw in 640x360, scaled to the window
+
+var player = ap.center()
+var score = 0
+var coin = ap.random_in(ap.Rect(40, 40, 560, 280))
+var chime = ap.tone(ap.WAVE_TRIANGLE, 660, 0.15, 1320, 0.4)
+var sparks = ap.Particles()
+
+function update(double dt)
+    player = player + ap.steer() * (220 * dt)
+    player = ap.Vec2(math.clamp(player.x, 12.0, 628.0), math.clamp(player.y, 12.0, 348.0))
+    if ap.circles_overlap(player, 12, coin, 8) do
+        score += 1
+        chime.play(0.5)
+        sparks.burst(coin, 20)
+        coin = ap.random_in(ap.Rect(40, 40, 560, 280))
+    end
+    sparks.update()
+end
+
+function draw()
+    ap.clear(ap.NAVY)
+    ap.circle(coin.x, coin.y, 8 + 2 * ap.pulse(0.6), ap.YELLOW)
+    sparks.draw()
+    ap.circle(player.x, player.y, 12, ap.ORANGE)
+    ap.text("SCORE {{score}}", 12, 10, 16)
+    ap.text("Arrow keys, WASD, or a gamepad", 12, 340, 8, ap.GRAY)
+end
+
+while ap.frame() do
+    update(ap.delta())
+    draw()
+    if ap.key_pressed(ap.KEY_ESCAPE) do
+        ap.quit()
+    end
+end
+ap.close()
+"""
+
+
+def _game_template(directory: Path, name: str, main: str) -> list[str]:
+    """A project that opens a window and plays: Aperture as a dependency, a game loop, assets/."""
+    manifest = directory / MANIFEST
+    manifests.set_value(manifest, "dependencies", "aperture", '"polymorphia.aperture=^1.0.0"')
+    manifests.set_value(manifest, "scripts", "start", f'"flywheel run {main}"')
+    created = []
+    if not (directory / main).exists():
+        (directory / main).write_text(GAME_TEMPLATE.format(name=name, main=main), encoding="utf-8")
+        created.append(main)
+    assets = directory / "assets"
+    if not assets.exists():
+        assets.mkdir()
+        (assets / "README.md").write_text(
+            "Images, sounds, and fonts for the game. Load them relative to the project:\n\n"
+            '    var ship = ap.load_texture("assets/ship.png")\n', encoding="utf-8")
+        created.append("assets/")
+    return created
 
 
 def cmd_new(args) -> None:
@@ -216,9 +289,7 @@ def cmd_new(args) -> None:
 
 
 def cmd_add(args) -> None:
-    target = Target(args.global_, create=True)
-    if args.global_ and args.dev:
-        raise PulleyError("global installs have no dev-dependencies")
+    target = Target()
     path = target.directory / MANIFEST
     original = path.read_text(encoding="utf-8")
     try:
@@ -233,13 +304,67 @@ def cmd_add(args) -> None:
 
 def cmd_install(args) -> None:
     if args.packages or args.path or args.git:
-        cmd_add(args)
+        _install_software(args)
         return
-    install_target(Target(args.global_), args)
+    if args.system or args.force:
+        raise PulleyError("name the package to install: pulley install author.name")
+    install_target(Target(), args)
+
+
+def _scope(args) -> tools.Scope:
+    return tools.scope(getattr(args, "system", False))
+
+
+def _software_dependencies(args) -> list[manifests.Dependency]:
+    deps = []
+    if args.path:
+        directory = (Path.cwd() / args.path).resolve()
+        if not directory.is_dir():
+            raise PulleyError(f"{args.path} is not a directory")
+        name = manifests.load(directory).name if (directory / MANIFEST).is_file() else ""
+        deps.append(manifests.Dependency(args.alias or _alias_for(name or directory.name.lower()), "path",
+                                         path=str(directory)))
+    if args.git:
+        name = args.git.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+        deps.append(manifests.Dependency(args.alias or _alias_for(name.lower()), "git", git=args.git, rev=args.rev or ""))
+    for spec in args.packages:
+        deps.append(_parse_spec(spec, args, manifests.Manifest(directory=Path.cwd())))
+    if args.alias and len(deps) > 1:
+        raise PulleyError("--as names one package")
+    return deps
+
+
+def _install_software(args, deps: list[manifests.Dependency] | None = None, verb: str = "installed") -> None:
+    if getattr(args, "dev", False) or getattr(args, "no_install", False) or getattr(args, "frozen", False):
+        raise PulleyError("-D, --no-install and --frozen are for a project's dependencies (`pulley add`)")
+    where = _scope(args)
+    resolve = lambda directory: resolve_into(directory, args, update_all=True, production=True, copy_paths=True)[1]
+    for dep in deps if deps is not None else _software_dependencies(args):
+        record = tools.install(where, dep, resolve, force=getattr(args, "force", False), log=step)
+        names = ", ".join(record["commands"])
+        done(f"{verb} {record['package']} for {where.describe()}: {names}")
+        for command, path in record["commands"].items():
+            other = tools.shadowed(command, Path(path))
+            if other:
+                warn(f"`{command}` runs {other}, which comes before {where.bin} on PATH")
+        if not tools.on_path(where.bin):
+            warn(f"{where.bin} isn't on PATH; add it to run {names} by name")
+
+
+def cmd_uninstall(args) -> None:
+    where = _scope(args)
+    for name in args.names:
+        found = tools.find(where, name)
+        if not found:
+            if cfg.find_project() and not args.system:
+                raise PulleyError(f"{name} isn't installed for {where.describe()} (`pulley remove {name}` removes a dependency)")
+            raise PulleyError(f"{name} isn't installed for {where.describe()}")
+        record = tools.uninstall(where, found)
+        done(f"uninstalled {record.get('package', found)}" + (f" ({', '.join(record.get('commands', {}))})" if record.get("commands") else ""))
 
 
 def cmd_remove(args) -> None:
-    target = Target(args.global_)
+    target = Target()
     manifest = target.manifest()
     original = manifest.path.read_text(encoding="utf-8")
     try:
@@ -258,7 +383,22 @@ def _remove_all(target: Target, manifest: manifests.Manifest, args) -> None:
 
 
 def cmd_update(args) -> None:
-    target = Target(args.global_)
+    if args.user or args.system:
+        where = _scope(args)
+        names = [tools.find(where, n) or n for n in args.names] or list(tools.records(where))
+        if not names:
+            say(f"nothing is installed for {where.describe()}")
+            return
+        for name in names:
+            if name not in tools.records(where):
+                raise PulleyError(f"{name} isn't installed for {where.describe()}")
+            before = tools.installed_version(where, name)
+            _install_software(args, [tools.environment_dependency(where, name)], verb="updated")
+            after = tools.installed_version(where, name)
+            if before != after:
+                say(f"  {name}: {before} -> {after}")
+        return
+    target = Target()
     names = set(args.names)
     manifest = target.manifest()
     unknown = names - {d.alias for d in manifest.all_dependencies()} - {
@@ -280,13 +420,34 @@ def cmd_update(args) -> None:
         say("everything is at the newest version its constraints allow")
 
 
+def _list_installs(scopes: list[bool]) -> None:
+    for system in scopes:
+        try:
+            where = tools.scope(system)
+        except PulleyError as exc:
+            say(f"system: {exc}")
+            continue
+        installed = tools.records(where)
+        say(f"installed for {where.describe()} (commands in {where.bin})")
+        if not installed:
+            say("  (nothing)")
+        for name, record in installed.items():
+            version = tools.installed_version(where, name)
+            source = record.get("distribution") or record.get("source", "")
+            commands = ", ".join(record.get("commands", {})) or "no commands"
+            say(f"  {name} {source}" + (f"={version}" if version and record.get("distribution") else "") + f": {commands}")
+
+
 def cmd_list(args) -> None:
-    target = Target(args.global_)
+    if args.user or args.system or not cfg.find_project():
+        _list_installs([False, True] if not (args.user or args.system) else [s for s, on in ((False, args.user), (True, args.system)) if on])
+        return
+    target = Target()
     manifest = target.manifest()
     lock = installer.read_lock(target.directory)
     present = installer.installed(target.modules)
     by_alias = {a: e for e in lock.values() for a in e.get("aliases", [])}
-    say(f"{manifest.name or 'global packages'}" + (f" {manifest.version}" if manifest.name else "") + f" ({target.describe()})")
+    say(f"{manifest.name or 'this project'}" + (f" {manifest.version}" if manifest.name else "") + f" ({target.describe()})")
 
     def describe(alias: str) -> str:
         entry = by_alias.get(alias)
@@ -314,7 +475,7 @@ def cmd_list(args) -> None:
                 seen.add(child)
                 tree(child, prefix + ("    " if last else "│   "), seen)
 
-    roots = manifest.all_dependencies(dev=not args.global_)
+    roots = manifest.all_dependencies()
     if not roots:
         say("  (no dependencies)")
     seen: set[str] = set()
@@ -329,7 +490,7 @@ def cmd_list(args) -> None:
 
 
 def cmd_outdated(args) -> None:
-    target = Target(args.global_)
+    target = Target()
     manifest = target.manifest()
     lock = installer.read_lock(target.directory)
     requirements = {d.alias: d for d in manifest.all_dependencies()}
@@ -365,7 +526,9 @@ def cmd_info(args) -> None:
     for line in r.view(author, name, chosen):
         say(line)
     say(f"Versions: {', '.join(versions)}")
-    say(f"Install: pulley add {author}.{name}" + (f"@{r}" if str(r) != cfg.default_registry() else ""))
+    where = f"@{r}" if str(r) != cfg.default_registry() else ""
+    say(f"Add it to a project: pulley add {author}.{name}{where}")
+    say(f"Install its commands, if it has any: pulley install {author}.{name}{where}")
 
 
 def cmd_publish(args) -> None:
@@ -467,7 +630,7 @@ def cmd_registry(args) -> None:
 
 
 def cmd_config(args) -> None:
-    keys = {"registry", "flywheel", "global_dir"}
+    keys = {"registry", "flywheel", "bin_dir"}
     data = cfg.load_config()
     if not args.key:
         for key in sorted(keys):
@@ -506,19 +669,33 @@ def cmd_run(args) -> None:
     if not project:
         raise PulleyError(f"no {MANIFEST} here or in a parent directory")
     manifest = manifests.load(project)
+    modules = project / LOCAL_MODULES
+    commands = sorted(p.stem if tools.WINDOWS else p.name for p in (modules / tools.PROJECT_BIN).glob("*")
+                      if not p.name.startswith(".")) if (modules / tools.PROJECT_BIN).is_dir() else []
     if not args.script:
         for name, command in manifest.scripts.items():
             say(f"{name}: {command}")
+        for name in commands:
+            say(f"{name}: a command of a dependency")
         return
+    # Scripts can run the dependencies' commands by name.
+    env = dict(os.environ, PATH=os.pathsep.join([str(modules / tools.PROJECT_BIN), os.environ.get("PATH", "")]))
     if args.script not in manifest.scripts:
-        raise PulleyError(f"no script '{args.script}' in [scripts] (scripts: {', '.join(manifest.scripts) or 'none'})")
+        launcher = tools.project_command(modules, args.script)
+        if not launcher:
+            available = list(manifest.scripts) + commands
+            raise PulleyError(f"no script or dependency command '{args.script}' "
+                              f"(available: {', '.join(available) or 'none'})")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        sys.exit(tools.run_command(launcher, args.arguments, Path.cwd()))
     command = manifest.scripts[args.script]
     if args.arguments:
         command += " " + " ".join(_shell_quote(a) for a in args.arguments)
     step(command)
     sys.stdout.flush()  # before the script writes to the same output
     sys.stderr.flush()
-    sys.exit(subprocess.call(command, shell=True, cwd=project))
+    sys.exit(subprocess.call(command, shell=True, cwd=project, env=env))
 
 
 def _shell_quote(text: str) -> str:
@@ -531,21 +708,26 @@ def _shell_quote(text: str) -> str:
 def cmd_where(args) -> None:
     project = cfg.find_project()
     flywheel = cfg.find_flywheel()
+    user = tools.scope(False)
     try:
-        global_dir = str(cfg.global_modules_dir())
+        system = tools.scope(True)
+        system_installs, system_bin = str(system.installs), str(system.bin)
     except PulleyError as exc:
-        global_dir = f"(unknown: {exc})"
+        system_installs = system_bin = f"(unknown: {exc})"
     rows = [
         ("project", str(project) if project else "(none)"),
-        ("local modules", str(project / LOCAL_MODULES) if project else "(none)"),
-        ("global modules", global_dir),
+        ("dependencies", str(project / LOCAL_MODULES) if project else "(none)"),
+        ("user installs", str(user.installs)),
+        ("user commands", str(user.bin) + ("" if tools.on_path(user.bin) else " (not on PATH)")),
+        ("system installs", system_installs),
+        ("system commands", system_bin),
         ("flywheel", str(flywheel) if flywheel else "(not found on PATH)"),
         ("registry", cfg.default_registry(manifests.load(project).registry if project else None)),
         ("config", str(cfg.config_dir())),
         ("cache", str(cfg.cache_dir())),
     ]
     for key, value in rows:
-        say(f"{key + ':':16} {value}")
+        say(f"{key + ':':17} {value}")
 
 
 # Argument parsing ------------------------------------------------------------------------
@@ -573,12 +755,13 @@ def parser() -> argparse.ArgumentParser:
     def registry_option(sub):
         sub.add_argument("--registry", help="Distrobase registry (host, URL, or #/local/path)")
 
-    def global_option(sub):
-        sub.add_argument("-g", "--global", dest="global_", action="store_true",
-                         help="use the Flywheel installation's modules directory")
+    def scope_options(sub, user=True):
+        if user:
+            sub.add_argument("--user", action="store_true", help="installs for this user")
+        sub.add_argument("--system", "-g", "--global", dest="system", action="store_true",
+                         help="installs for the Flywheel installation (every user of it)")
 
     def install_options(sub):
-        global_option(sub)
         registry_option(sub)
         sub.add_argument("--production", action="store_true", help="leave out dev-dependencies")
         sub.add_argument("-v", "--verbose", action="store_true", help="show resolution steps")
@@ -591,6 +774,10 @@ def parser() -> argparse.ArgumentParser:
         s.add_argument("--name")
         s.add_argument("--author", help="your Distrobase username")
         s.add_argument("--main", help="the main module file (default <name>.fw)")
+        s.add_argument("--template", choices=["package", "game"], default="package",
+                       help="what to start from: a package (default) or a game using Aperture")
+        s.add_argument("--game", dest="template", action="store_const", const="game",
+                       help="the same as --template game")
         s.set_defaults(tests=False)
 
     def add_options(sub, packages_nargs):
@@ -604,24 +791,31 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--no-install", action="store_true", help="only change pulley.toml")
         install_options(sub)
 
-    add_options(command("add", cmd_add, "add dependencies and install them"), "*")
-    sub = command("install", cmd_install, "install the project's dependencies (or add and install packages)", ["i", "get"])
+    add_options(command("add", cmd_add, "add dependencies to this project and install them"), "*")
+    sub = command("install", cmd_install, "install this project's dependencies, or install packages' commands "
+                  "for this user (--system: for the Flywheel installation)", ["i", "get"])
     add_options(sub, "*")
     sub.add_argument("--frozen", action="store_true", help="fail if pulley.lock is out of date (for CI)")
+    sub.add_argument("--force", action="store_true", help="take over commands that another install has")
+    scope_options(sub, user=False)
 
-    for name, aliases in (("remove", ["rm", "uninstall"]),):
-        sub = command(name, cmd_remove, "remove dependencies", aliases)
-        sub.add_argument("names", nargs="+", metavar="name")
-        install_options(sub)
-    sub = command("update", cmd_update, "move dependencies to the newest versions their constraints allow", ["up", "upgrade"])
+    sub = command("uninstall", cmd_uninstall, "uninstall packages installed with `pulley install author.name`")
+    sub.add_argument("names", nargs="+", metavar="name", help="the install's name, author.name, or a command")
+    scope_options(sub, user=False)
+    sub = command("remove", cmd_remove, "remove dependencies from this project", ["rm"])
+    sub.add_argument("names", nargs="+", metavar="name")
+    install_options(sub)
+    sub = command("update", cmd_update, "move dependencies to the newest versions their constraints allow "
+                  "(--user/--system: update installs)", ["up", "upgrade"])
     sub.add_argument("names", nargs="*", metavar="name")
     install_options(sub)
+    scope_options(sub)
+    sub.set_defaults(force=False)
 
-    sub = command("list", cmd_list, "list installed packages", ["ls"])
-    global_option(sub)
+    sub = command("list", cmd_list, "list this project's packages, or installs (--user/--system)", ["ls"])
+    scope_options(sub)
     sub.add_argument("-t", "--tree", action="store_true", help="show the dependency tree")
     sub = command("outdated", cmd_outdated, "show dependencies with newer releases")
-    global_option(sub)
 
     sub = command("info", cmd_info, "show a distribution's releases", ["view", "show"])
     sub.add_argument("address", help="author.name[@registry][=version]")
@@ -652,13 +846,13 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--reset", action="store_true", help=f"go back to {cfg.DEFAULT_REGISTRY}")
     # Not an argparse alias, so it takes no arguments and can only show.
     command("whereami", cmd_registry, "show the default registry").set_defaults(name=None, reset=False)
-    sub = command("config", cmd_config, "show or change settings (registry, flywheel, global_dir)")
+    sub = command("config", cmd_config, "show or change settings (registry, flywheel, bin_dir)")
     sub.add_argument("key", nargs="?")
     sub.add_argument("value", nargs="?")
     sub.add_argument("--unset", action="store_true")
     sub = command("cache", cmd_cache, "show or clean the download cache")
     sub.add_argument("action", nargs="?", choices=["list", "dir", "clean"], default="list")
-    sub = command("run", cmd_run, "run a script from [scripts]")
+    sub = command("run", cmd_run, "run a script from [scripts], or a dependency's command")
     sub.add_argument("script", nargs="?")
     sub.add_argument("arguments", nargs=argparse.REMAINDER)
     command("where", cmd_where, "show the directories and registry Pulley uses", ["paths"])

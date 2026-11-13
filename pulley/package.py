@@ -50,6 +50,12 @@ def check(manifest: Manifest) -> None:
         problems.append("[package] version is required")
     if not (manifest.directory / manifest.main_module()).is_file():
         problems.append(f"the main module {manifest.main_module()} does not exist (set [package] main)")
+    shipped = {f.as_posix() for f in files(manifest)}
+    for command, program in manifest.commands.items():
+        if not (manifest.directory / program).is_file():
+            problems.append(f"command '{command}' runs {program}, which does not exist")
+        elif program not in shipped:
+            problems.append(f"command '{command}' runs {program}, which [package] exclude leaves out")
     for dep in manifest.dependencies.values():
         if dep.kind == "path":
             problems.append(f"dependency '{dep.alias}' is a path; published packages can only depend on registry or git packages")

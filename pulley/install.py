@@ -109,8 +109,13 @@ def _copy_tree(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, ignore=lambda d, names: [n for n in names if n in SKIP])
 
 
-def sync(modules: Path, packages: dict[tuple, Package], include_dev: bool = True, log=print) -> dict[str, int]:
-    """Makes a modules directory hold exactly the resolved packages. Returns change counts."""
+def sync(modules: Path, packages: dict[tuple, Package], include_dev: bool = True, log=print,
+         copy_paths: bool = False) -> dict[str, int]:
+    """Makes a modules directory hold exactly the resolved packages. Returns change counts.
+
+    Path packages are linked (a ``.link`` file), or copied with `copy_paths`, as installs do so
+    that they keep working when the directory changes.
+    """
     modules.mkdir(parents=True, exist_ok=True)
     wanted: dict[str, Package] = {}
     for package in packages.values():
@@ -123,7 +128,7 @@ def sync(modules: Path, packages: dict[tuple, Package], include_dev: bool = True
     for alias, package in sorted(wanted.items()):
         directory, link = modules / alias, modules / f"{alias}.link"
         previous = current.get(alias)
-        if package.kind == "path":
+        if package.kind == "path" and not copy_paths:
             target = str(Path(package.path).resolve())
             if previous == {"source": "path", "path": target}:
                 counts["unchanged"] += 1
@@ -136,7 +141,9 @@ def sync(modules: Path, packages: dict[tuple, Package], include_dev: bool = True
             link.write_text(target + "\n", encoding="utf-8")
         else:
             record = _record(package)
-            if previous == record and directory.is_dir():
+            if package.kind == "path":
+                record.update(path=str(Path(package.path).resolve()), copied=True)
+            elif previous == record and directory.is_dir():
                 counts["unchanged"] += 1
                 continue
             if directory.exists() and not (directory / RECORD).exists():

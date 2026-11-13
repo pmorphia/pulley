@@ -81,26 +81,41 @@ def find_flywheel() -> Path | None:
     return Path(found).resolve() if found else None
 
 
-def global_modules_dir() -> Path:
-    """The installation-wide modules directory that flywheel searches.
+def flywheel_root() -> Path:
+    """The Flywheel installation: the directory that holds ``bin/flywheel``.
 
-    This mirrors the compiler: ``$FLYWHEEL_HOME/modules`` when set, otherwise ``modules``
-    in the directory that holds ``bin/flywheel`` (or the executable's own directory).
+    This mirrors the compiler: ``$FLYWHEEL_HOME`` when set, otherwise the directory above
+    ``bin/flywheel`` (or the executable's own directory when it is not in a ``bin`` directory).
     """
     if os.environ.get("FLYWHEEL_HOME"):
-        return Path(os.environ["FLYWHEEL_HOME"]) / "modules"
-    if load_config().get("global_dir"):
-        return Path(load_config()["global_dir"]).expanduser()
+        return Path(os.environ["FLYWHEEL_HOME"])
     flywheel = find_flywheel()
     if not flywheel:
         raise PulleyError(
-            "cannot find the flywheel installation for a global install: put flywheel on PATH, "
-            "set FLYWHEEL_HOME, or run `pulley config flywheel /path/to/flywheel`"
+            "cannot find the Flywheel installation: put flywheel on PATH, set FLYWHEEL_HOME, "
+            "or run `pulley config flywheel /path/to/flywheel`"
         )
     directory = flywheel.resolve().parent
-    if directory.name == "bin":
-        directory = directory.parent
-    return directory / "modules"
+    return directory.parent if directory.name == "bin" else directory
+
+
+def data_dir() -> Path:
+    """Where Pulley keeps what it installs for this user."""
+    if os.environ.get("PULLEY_DATA_DIR"):
+        return Path(os.environ["PULLEY_DATA_DIR"])
+    if platform.system() == "Windows":
+        return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "pulley"
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "pulley"
+
+
+def user_bin_dir() -> Path:
+    """Where commands installed for this user go."""
+    configured = os.environ.get("PULLEY_BIN_DIR") or load_config().get("bin_dir")
+    if configured:
+        return Path(configured).expanduser()
+    if platform.system() == "Windows":
+        return data_dir() / "bin"
+    return Path(os.environ.get("XDG_BIN_HOME", Path.home() / ".local" / "bin"))
 
 
 def find_project(start: Path | None = None) -> Path | None:

@@ -27,6 +27,9 @@
     [scripts]
     test = "flywheel test"
 
+    [commands]
+    app = "cli.fw"            # `pulley install` puts an `app` command on PATH that runs cli.fw
+
 The dependency key is the import name: ``import shapes``.
 """
 
@@ -42,6 +45,7 @@ from .versions import Constraint, ConstraintError
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 ALIAS = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+COMMAND = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 @dataclass
@@ -171,6 +175,7 @@ class Manifest:
     dependencies: dict[str, Dependency] = field(default_factory=dict)
     dev_dependencies: dict[str, Dependency] = field(default_factory=dict)
     scripts: dict[str, str] = field(default_factory=dict)
+    commands: dict[str, str] = field(default_factory=dict)  # command name -> program, relative
 
     @property
     def path(self) -> Path:
@@ -207,10 +212,27 @@ def load(directory: Path) -> Manifest:
         target = manifest.dev_dependencies if dev else manifest.dependencies
         for alias, value in (data.get(table) or {}).items():
             target[alias] = _dependency(alias, value, dev)
+    manifest.commands = _commands(path, data.get("commands") or {})
     both = set(manifest.dependencies) & set(manifest.dev_dependencies)
     if both:
         raise PulleyError(f"{path}: {', '.join(sorted(both))} listed in both dependencies and dev-dependencies")
     return manifest
+
+
+def _commands(path: Path, table) -> dict[str, str]:
+    if not isinstance(table, dict):
+        raise PulleyError(f"{path}: [commands] must be a table of name = \"program.fw\"")
+    commands = {}
+    for name, program in table.items():
+        if not COMMAND.match(str(name)):
+            raise PulleyError(f"{path}: command name '{name}' must be letters, digits, '.', '-' and '_'")
+        if not isinstance(program, str) or not program.strip():
+            raise PulleyError(f"{path}: command '{name}' must name a program file, like \"cli.fw\"")
+        relative = program.replace("\\", "/")
+        if relative.startswith("/") or ":" in relative.split("/")[0] or ".." in relative.split("/"):
+            raise PulleyError(f"{path}: command '{name}' must name a file inside the package, not {program!r}")
+        commands[str(name)] = relative
+    return commands
 
 
 def template(name: str, author: str, main: str) -> str:
