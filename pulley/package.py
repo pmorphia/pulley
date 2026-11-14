@@ -59,6 +59,8 @@ def check(manifest: Manifest) -> None:
     for dep in manifest.dependencies.values():
         if dep.kind == "path":
             problems.append(f"dependency '{dep.alias}' is a path; published packages can only depend on registry or git packages")
+        elif dep.kind == "registry" and (dep.author, dep.name) == (manifest.author, manifest.name):
+            problems.append(f"dependency '{dep.alias}' is this package itself ({dep.distribution}); remove it")
     if problems:
         raise PulleyError("cannot publish:\n  " + "\n  ".join(problems))
 

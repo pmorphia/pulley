@@ -60,7 +60,7 @@ class Target:
         project = cfg.find_project()
         if project is None:
             raise PulleyError(f"no {MANIFEST} here or in a parent directory; run `pulley init` "
-                              "(`pulley install author.name` installs a package's commands instead)")
+                              "(`pulley pull author.name` installs a package for every program instead)")
         self.directory = project
         self.modules = project / LOCAL_MODULES
 
@@ -90,7 +90,7 @@ def resolve_into(directory: Path, args, update: set[str] | None = None, update_a
         locked = {k: state(e.get("version"), e.get("commit"), e.get("aliases", [])) for k, e in lock.items()}
         resolved = {k: state(p.version, p.commit, p.aliases) for k, p in packages.items()}
         if locked != resolved:
-            raise PulleyError(f"{MANIFEST} and {cfg.LOCKFILE} disagree (run `pulley install` without --frozen)")
+            raise PulleyError(f"{MANIFEST} and {cfg.LOCKFILE} disagree (run `pulley pull` without --frozen)")
     else:
         installer.write_lock(directory, packages)
     counts = installer.sync(directory / LOCAL_MODULES, packages, include_dev=not production, log=step,
@@ -117,63 +117,22 @@ def _alias_for(name: str) -> str:
     return alias if manifests.ALIAS.match(alias) else "_" + alias
 
 
-def _parse_spec(text: str, args, manifest: manifests.Manifest) -> manifests.Dependency:
-    alias = getattr(args, "alias", None)
-    named = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.+)$", text)
-    if named:  # alias=author.name...
-        alias, text = named.group(1), named.group(2)
+def _parse_spec(text: str, args) -> manifests.Dependency:
     author, name, registry, constraint = manifests.parse_address(text)
     registry = registry or getattr(args, "registry", None)
-    if registry == cfg.default_registry(manifest.registry):
+    if registry == cfg.default_registry():
         registry = None
-    dependency = manifests.Dependency(alias or _alias_for(name), "registry", author, name, registry, constraint,
-                                      dev=getattr(args, "dev", False))
+    dependency = manifests.Dependency(getattr(args, "alias", None) or _alias_for(name), "registry", author, name,
+                                      registry, constraint)
     if constraint in ("*", "latest"):
-        # Record a compatible-release constraint on the newest version, as `npm install` does.
-        r = Registry(registry or cfg.default_registry(manifest.registry))
+        # Record a compatible-release constraint on the newest version, so `update` stays compatible.
+        r = Registry(registry or cfg.default_registry())
         versions = r.versions(author, name)
         newest = best(versions, [Constraint("*")]) or r.latest(author, name)
         if not newest:
             raise PulleyError(f"{author}.{name} has no releases on {r}")
         dependency.constraint = caret(newest)
     return dependency
-
-
-def _path_dependency(path: str, args, base: Path) -> manifests.Dependency:
-    directory = (Path.cwd() / path).resolve()
-    if not directory.is_dir():
-        raise PulleyError(f"{path} is not a directory")
-    name = directory.name
-    if (directory / MANIFEST).is_file():
-        name = manifests.load(directory).name or name
-    relative = os.path.relpath(directory, base)
-    return manifests.Dependency(getattr(args, "alias", None) or _alias_for(name), "path", path=relative,
-                                dev=getattr(args, "dev", False))
-
-
-def _add(target: Target, args) -> list[manifests.Dependency]:
-    manifest = target.manifest()
-    deps = []
-    if args.path:
-        deps.append(_path_dependency(args.path, args, target.directory))
-    if args.git:
-        name = args.git.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
-        deps.append(manifests.Dependency(args.alias or _alias_for(name.lower()), "git", git=args.git,
-                                         rev=args.rev or "", dev=args.dev))
-    for spec in args.packages:
-        deps.append(_parse_spec(spec, args, manifest))
-    if args.alias and len(deps) > 1:
-        raise PulleyError("--as names one package")
-    if not deps:
-        raise PulleyError("name a package (author.name), --path, or --git")
-    for dep in deps:
-        table = "dev-dependencies" if dep.dev else "dependencies"
-        other = "dependencies" if dep.dev else "dev-dependencies"
-        manifests.remove_value(manifest.path, other, dep.alias)
-        manifests.set_value(manifest.path, table, dep.alias, dep.toml())
-        say(f"{'+' if dep.alias not in manifest.dependencies and dep.alias not in manifest.dev_dependencies else '~'} "
-            f"{dep.alias} = {dep.describe()}" + (" (dev)" if dep.dev else ""))
-    return deps
 
 
 # Commands --------------------------------------------------------------------------------
@@ -211,7 +170,7 @@ def cmd_init(args) -> None:
         created.append(".gitignore")
     done(f"created {name} in {directory} ({', '.join(created)})")
     if getattr(args, "template", None) == "game":
-        say(f"next: cd {args.directory or '.'} && pulley install && pulley run start")
+        say(f"next: cd {args.directory or '.'} && pulley pull && pulley run start")
 
 
 GAME_TEMPLATE = """# {name}: a game made with Aperture.
@@ -288,26 +247,17 @@ def cmd_new(args) -> None:
     cmd_init(args)
 
 
-def cmd_add(args) -> None:
-    target = Target()
-    path = target.directory / MANIFEST
-    original = path.read_text(encoding="utf-8")
-    try:
-        _add(target, args)
-        if not args.no_install:
-            install_target(target, args)
-    except BaseException:
-        # A dependency that cannot be resolved or installed is not recorded.
-        path.write_text(original, encoding="utf-8")
-        raise
-
-
-def cmd_install(args) -> None:
+def cmd_pull(args) -> None:
     if args.packages or args.path or args.git:
-        _install_software(args)
+        if getattr(args, "frozen", False) or getattr(args, "production", False):
+            raise PulleyError("--frozen and --production are for a project's dependencies (`pulley pull` alone)")
+        _pull_packages(args)
         return
-    if args.system or args.force:
-        raise PulleyError("name the package to install: pulley install author.name")
+    if args.system or args.force or args.bin or args.yes:
+        raise PulleyError("name the package to pull: pulley pull author.name")
+    if cfg.find_project() is None:
+        raise PulleyError(f"no {MANIFEST} here or in a parent directory: name a package to pull "
+                          "(pulley pull author.name), or run `pulley init` to start a project")
     install_target(Target(), args)
 
 
@@ -315,7 +265,7 @@ def _scope(args) -> tools.Scope:
     return tools.scope(getattr(args, "system", False))
 
 
-def _software_dependencies(args) -> list[manifests.Dependency]:
+def _pulled_dependencies(args) -> list[manifests.Dependency]:
     deps = []
     if args.path:
         directory = (Path.cwd() / args.path).resolve()
@@ -328,26 +278,81 @@ def _software_dependencies(args) -> list[manifests.Dependency]:
         name = args.git.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
         deps.append(manifests.Dependency(args.alias or _alias_for(name.lower()), "git", git=args.git, rev=args.rev or ""))
     for spec in args.packages:
-        deps.append(_parse_spec(spec, args, manifests.Manifest(directory=Path.cwd())))
+        deps.append(_parse_spec(spec, args))
     if args.alias and len(deps) > 1:
         raise PulleyError("--as names one package")
     return deps
 
 
-def _install_software(args, deps: list[manifests.Dependency] | None = None, verb: str = "installed") -> None:
-    if getattr(args, "dev", False) or getattr(args, "no_install", False) or getattr(args, "frozen", False):
-        raise PulleyError("-D, --no-install and --frozen are for a project's dependencies (`pulley add`)")
+def _ask(question: str) -> bool:
+    """A yes/no question on the terminal; no when nobody can answer."""
+    if not sys.stdin.isatty():
+        return False
+    try:
+        answer = input(f"{question} [y/N] ").strip().lower()
+    except EOFError:
+        return False
+    return answer in ("y", "yes")
+
+
+def _chooser(args, again: str, keep: bool = False):
+    """What a pull installs: the library unless --bin; the commands with --bin, --yes, or a yes.
+
+    `again` is how to pull the package again (for hints). With `keep` (an update), the install
+    keeps what it had.
+    """
+    only_commands = getattr(args, "bin", False)
+    yes = getattr(args, "yes", False)
+
+    def choose(label: str, commands: list[str], previous: dict | None) -> tuple[bool, bool]:
+        had_library = bool((previous or {}).get("library"))
+        had_commands = bool((previous or {}).get("commands"))
+        if keep and previous is not None:
+            return had_library, had_commands and bool(commands)
+        if only_commands:
+            if not commands:
+                raise PulleyError(f"{label} has no commands; `pulley pull {again}` (without -b) installs it as a library")
+            return had_library, True
+        if not commands:
+            return True, False
+        if had_commands or yes:
+            return True, True
+        names = ", ".join(commands)
+        if _ask(f"{label} has command(s): {names}. Install them too?"):
+            return True, True
+        say(f"  not installing its command(s) {names}; `pulley pull {again} -b` installs them")
+        return True, False
+
+    return choose
+
+
+def _again(dep: manifests.Dependency) -> str:
+    """The shortest way to name a dependency to `pulley pull`."""
+    if dep.kind == "path":
+        return f"--path {dep.path}"
+    if dep.kind == "git":
+        return f"--git {dep.git}"
+    return dep.name if dep.author == cfg.DEFAULT_AUTHOR else dep.distribution
+
+
+def _pull_packages(args, deps: list[manifests.Dependency] | None = None, verb: str = "pulled",
+                   keep: bool = False) -> None:
     where = _scope(args)
     resolve = lambda directory: resolve_into(directory, args, update_all=True, production=True, copy_paths=True)[1]
-    for dep in deps if deps is not None else _software_dependencies(args):
-        record = tools.install(where, dep, resolve, force=getattr(args, "force", False), log=step)
+    for dep in deps if deps is not None else _pulled_dependencies(args):
+        record = tools.install(where, dep, resolve, _chooser(args, _again(dep), keep), force=getattr(args, "force", False), log=step)
+        provides = []
+        if record.get("library"):
+            provides.append(f"`import {record['name']}` for every program")
         names = ", ".join(record["commands"])
-        done(f"{verb} {record['package']} for {where.describe()}: {names}")
+        if names:
+            provides.append(f"command(s) {names} for {where.describe()}")
+        done(f"{verb} {record['package']}: " + " and ".join(provides))
         for command, path in record["commands"].items():
             other = tools.shadowed(command, Path(path))
             if other:
                 warn(f"`{command}` runs {other}, which comes before {where.bin} on PATH")
-        if not tools.on_path(where.bin):
+        if names and not tools.on_path(where.bin):
             warn(f"{where.bin} isn't on PATH; add it to run {names} by name")
 
 
@@ -393,7 +398,7 @@ def cmd_update(args) -> None:
             if name not in tools.records(where):
                 raise PulleyError(f"{name} isn't installed for {where.describe()}")
             before = tools.installed_version(where, name)
-            _install_software(args, [tools.environment_dependency(where, name)], verb="updated")
+            _pull_packages(args, [tools.environment_dependency(where, name)], verb="updated", keep=True)
             after = tools.installed_version(where, name)
             if before != after:
                 say(f"  {name}: {before} -> {after}")
@@ -428,14 +433,15 @@ def _list_installs(scopes: list[bool]) -> None:
             say(f"system: {exc}")
             continue
         installed = tools.records(where)
-        say(f"installed for {where.describe()} (commands in {where.bin})")
+        say(f"pulled for {where.describe()} (commands in {where.bin})")
         if not installed:
             say("  (nothing)")
         for name, record in installed.items():
             version = tools.installed_version(where, name)
             source = record.get("distribution") or record.get("source", "")
-            commands = ", ".join(record.get("commands", {})) or "no commands"
-            say(f"  {name} {source}" + (f"={version}" if version and record.get("distribution") else "") + f": {commands}")
+            provides = (["library"] if record.get("library") else []) + list(record.get("commands", {}))
+            say(f"  {name} {source}" + (f"={version}" if version and record.get("distribution") else "")
+                + f": {', '.join(provides) or 'nothing'}")
 
 
 def cmd_list(args) -> None:
@@ -452,7 +458,7 @@ def cmd_list(args) -> None:
     def describe(alias: str) -> str:
         entry = by_alias.get(alias)
         if not entry:
-            return f"{alias} (not installed; run `pulley install`)"
+            return f"{alias} (not installed; run `pulley pull`)"
         if entry["source"] == "registry":
             text = f"{alias} {entry['distribution']}={entry['version']}"
             if entry["registry"] != cfg.default_registry(manifest.registry):
@@ -462,7 +468,7 @@ def cmd_list(args) -> None:
         else:
             text = f"{alias} git {entry['git']} {entry.get('commit', '')[:12]}"
         if alias not in present:
-            text += " (missing from the modules directory; run `pulley install`)"
+            text += " (missing from the modules directory; run `pulley pull`)"
         return text
 
     def tree(alias: str, prefix: str, seen: set[str]) -> None:
@@ -527,8 +533,10 @@ def cmd_info(args) -> None:
         say(line)
     say(f"Versions: {', '.join(versions)}")
     where = f"@{r}" if str(r) != cfg.default_registry() else ""
-    say(f"Add it to a project: pulley add {author}.{name}{where}")
-    say(f"Install its commands, if it has any: pulley install {author}.{name}{where}")
+    short = name if author == cfg.DEFAULT_AUTHOR else f"{author}.{name}"
+    say(f"Use it in every program: pulley pull {short}{where}")
+    say(f"Install only its commands, if it has any: pulley pull {short}{where} -b")
+    say(f'Make it a project dependency: {name} = "{author}.{name}{where}" in [dependencies] of {MANIFEST}')
 
 
 def cmd_publish(args) -> None:
@@ -705,6 +713,13 @@ def _shell_quote(text: str) -> str:
     return shlex.quote(text)
 
 
+def _libraries_dir() -> str:
+    try:
+        return str(cfg.flywheel_root() / "modules")
+    except PulleyError as exc:
+        return f"(unknown: {exc})"
+
+
 def cmd_where(args) -> None:
     project = cfg.find_project()
     flywheel = cfg.find_flywheel()
@@ -721,6 +736,7 @@ def cmd_where(args) -> None:
         ("user commands", str(user.bin) + ("" if tools.on_path(user.bin) else " (not on PATH)")),
         ("system installs", system_installs),
         ("system commands", system_bin),
+        ("libraries", _libraries_dir()),
         ("flywheel", str(flywheel) if flywheel else "(not found on PATH)"),
         ("registry", cfg.default_registry(manifests.load(project).registry if project else None)),
         ("config", str(cfg.config_dir())),
@@ -780,26 +796,22 @@ def parser() -> argparse.ArgumentParser:
                        help="the same as --template game")
         s.set_defaults(tests=False)
 
-    def add_options(sub, packages_nargs):
-        sub.add_argument("packages", nargs=packages_nargs, metavar="package",
-                         help="author.name, author.name=^1.2, author.name@registry, or alias=author.name")
-        sub.add_argument("--as", dest="alias", help="import name (default: the distribution name)")
-        sub.add_argument("-D", "--dev", action="store_true", help="add as a dev-dependency")
-        sub.add_argument("--path", help="a local package directory")
-        sub.add_argument("--git", help="a git repository URL")
-        sub.add_argument("--rev", help="git branch, tag, or commit")
-        sub.add_argument("--no-install", action="store_true", help="only change pulley.toml")
-        install_options(sub)
-
-    add_options(command("add", cmd_add, "add dependencies to this project and install them"), "*")
-    sub = command("install", cmd_install, "install this project's dependencies, or install packages' commands "
-                  "for this user (--system: for the Flywheel installation)", ["i", "get"])
-    add_options(sub, "*")
+    sub = command("pull", cmd_pull, "in a project, install its dependencies; with packages, install them "
+                  "as libraries for every program (and their commands, if you say so)", ["p"])
+    sub.add_argument("packages", nargs="*", metavar="package",
+                     help="name (a polymorphia package), author.name, author.name=^1.2, or author.name@registry")
+    sub.add_argument("-b", "--bin", action="store_true", help="install only the package's commands")
+    sub.add_argument("-y", "--yes", action="store_true", help="install the commands too, without asking")
+    sub.add_argument("--as", dest="alias", help="import name (default: the distribution name)")
+    sub.add_argument("--path", help="a local package directory")
+    sub.add_argument("--git", help="a git repository URL")
+    sub.add_argument("--rev", help="git branch, tag, or commit")
     sub.add_argument("--frozen", action="store_true", help="fail if pulley.lock is out of date (for CI)")
-    sub.add_argument("--force", action="store_true", help="take over commands that another install has")
+    sub.add_argument("--force", action="store_true", help="take over commands or an import name another install has")
+    install_options(sub)
     scope_options(sub, user=False)
 
-    sub = command("uninstall", cmd_uninstall, "uninstall packages installed with `pulley install author.name`")
+    sub = command("uninstall", cmd_uninstall, "uninstall packages pulled with `pulley pull author.name`")
     sub.add_argument("names", nargs="+", metavar="name", help="the install's name, author.name, or a command")
     scope_options(sub, user=False)
     sub = command("remove", cmd_remove, "remove dependencies from this project", ["rm"])
@@ -810,7 +822,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("names", nargs="*", metavar="name")
     install_options(sub)
     scope_options(sub)
-    sub.set_defaults(force=False)
+    sub.set_defaults(force=False, bin=False, yes=False)
 
     sub = command("list", cmd_list, "list this project's packages, or installs (--user/--system)", ["ls"])
     scope_options(sub)

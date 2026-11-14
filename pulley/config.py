@@ -15,6 +15,7 @@ import stat
 from pathlib import Path
 
 DEFAULT_REGISTRY = "wednesware.org"
+DEFAULT_AUTHOR = "polymorphia"  # the author of an address that names none
 LOCAL_MODULES = ".flywheel-modules"
 MANIFEST = "pulley.toml"
 LOCKFILE = "pulley.lock"

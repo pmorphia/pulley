@@ -1,21 +1,28 @@
-"""Installed software and its commands, apart from any project.
+"""Packages pulled apart from any project.
 
-``pulley install author.name`` installs a package for this user, and ``--system`` for the
+``pulley pull author.name`` installs a package for this user, and ``--system`` for the
 Flywheel installation. Each install is its own environment, ``<installs>/<name>/``, holding a
 pulley.toml that names the one package, its pulley.lock, and a ``.flywheel-modules`` with the
 package and its dependencies. Installs never share dependencies with each other or with a
-project, and nothing in them is importable by other programs: dependencies come only from a
-project's pulley.toml.
+project. No project's pulley.toml is read or changed.
 
-What an install provides is its package's ``[commands]``: one launcher per command in a bin
-directory, a small script that runs the command's program with the environment's Flywheel
-packages. A project's direct dependencies get launchers too, in ``.flywheel-modules/.bin``,
-which ``pulley run`` uses.
+An install provides its package as a library, its ``[commands]``, or both:
+
+- The library is ``<flywheel>/modules/<name>.link``, which points into the environment. The
+  compiler searches that directory after a program's own ``.flywheel-modules``, so any program
+  can ``import <name>``, and the library finds its own dependencies in its environment.
+- Each command is a launcher in a bin directory, a small script that runs the command's
+  program with the environment's packages.
+
+A project's direct dependencies get launchers too, in ``.flywheel-modules/.bin``, which
+``pulley run`` uses.
 
 | scope   | environments                       | launchers                     |
 |---------|------------------------------------|-------------------------------|
 | user    | ``<data>/installs`` (~/.local/share/pulley) | ``~/.local/bin`` (``bin_dir``) |
 | system  | ``<flywheel>/pulley/installs``     | ``<flywheel>/bin``, next to flywheel |
+
+Libraries are installation-wide for both scopes: Flywheel has one ``modules`` directory.
 """
 
 from __future__ import annotations
@@ -151,7 +158,7 @@ def project_launchers(modules: Path, aliases: list[str], log=print) -> int:
     flywheel = flywheel.resolve()
     for name, (alias, program) in sorted(wanted.items()):
         _write_launcher(launcher_path(directory, name),
-                        _launcher(flywheel, program, "project", f"From the dependency {alias}; `pulley install` rewrites it."))
+                        _launcher(flywheel, program, "project", f"From the dependency {alias}; `pulley pull` rewrites it."))
     return len(wanted)
 
 
@@ -188,18 +195,43 @@ def find(where: Scope, name: str) -> str | None:
 
 
 def _environment_manifest(dependency: manifests.Dependency) -> str:
-    return ("# Installed by `pulley install`; `pulley uninstall " + dependency.alias + "` removes it.\n"
-            "# Its packages are only for its commands, not for other programs.\n\n"
+    return ("# Made by `pulley pull`; `pulley uninstall " + dependency.alias + "` removes it.\n\n"
             f"[dependencies]\n{dependency.alias} = {dependency.toml()}\n")
 
 
-def install(where: Scope, dependency: manifests.Dependency, resolve, force: bool = False, log=print) -> dict:
-    """Installs one package into its own environment and its commands into the scope's bin.
+def library_link(name: str) -> Path:
+    """Where an installed library is linked: the Flywheel installation's modules directory."""
+    return cfg.flywheel_root() / "modules" / f"{name}.link"
+
+
+def _link_target(link: Path) -> Path | None:
+    try:
+        text = link.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return Path(text) if text else None
+
+
+def owns_library(where: Scope, name: str, link: Path) -> bool:
+    """Whether a library link points into this scope's install `name`."""
+    target = _link_target(link)
+    if target is None:
+        return False
+    try:
+        return target.resolve().is_relative_to((where.installs / name).resolve())
+    except OSError:
+        return False
+
+
+def install(where: Scope, dependency: manifests.Dependency, resolve, choose, force: bool = False,
+            log=print) -> dict:
+    """Installs one package into its own environment, as a library and/or its commands.
 
     `resolve(directory)` resolves and installs the pulley.toml in `directory` and returns the
-    resolved packages (the same as installing a project). Returns the install's record.
+    resolved packages (the same as installing a project). `choose(label, commands, previous)`
+    gets the package's label, its command names, and the previous install's record (or None),
+    and returns (library, commands): what to install. Returns the install's record.
     """
-    flywheel = need_flywheel(where.flywheel)
     name = dependency.alias
     env = where.installs / name
     previous = records(where).get(name)
@@ -213,11 +245,18 @@ def install(where: Scope, dependency: manifests.Dependency, resolve, force: bool
         root = next(p for p in packages.values() if name in p.aliases)
         label = root.label
         directory = package_directory(staging / LOCAL_MODULES, name)
-        commands = package_commands(directory) if directory else {}
-        if not commands:
-            raise PulleyError(
-                f"{label} has no commands, so there is nothing to install. To use it as a library, "
-                f"add it to a project: pulley add {dependency.distribution if dependency.kind == 'registry' else '--path/--git ...'}")
+        available = package_commands(directory) if directory else {}
+        want_library, want_commands = choose(label, sorted(available), previous)
+        commands = available if want_commands else {}
+        flywheel = need_flywheel(where.flywheel) if commands else None
+        link = library_link(name) if want_library else None
+        if link is not None:
+            if (link.parent / name).exists():
+                raise PulleyError(f"{link.parent / name} already provides `import {name}`; remove it, "
+                                  f"or pull with --as to use another name")
+            if link.exists() and not owns_library(where, name, link) and not force:
+                raise PulleyError(f"{link} already provides `import {name}` (from {_link_target(link)}); "
+                                  f"pull with --force to replace it, or --as to use another name")
         # Launchers that are in the way: another install's (only with --force) or not Pulley's.
         taken: dict[str, str] = {}
         for command in commands:
@@ -230,12 +269,12 @@ def install(where: Scope, dependency: manifests.Dependency, resolve, force: bool
             if owner != name:
                 if not force:
                     raise PulleyError(f"the {command} command is already installed by {owner}; "
-                                      f"`pulley uninstall {owner}` first, or install with --force to take it over")
+                                      f"`pulley uninstall {owner}` first, or pull with --force to take it over")
                 taken[command] = owner
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    # Swap the new environment in, then point the launchers at it.
+    # Swap the new environment in, then point the library and launchers at it.
     if env.exists():
         old = where.installs / f".{name}.old"
         if old.exists():
@@ -246,6 +285,17 @@ def install(where: Scope, dependency: manifests.Dependency, resolve, force: bool
     else:
         staging.rename(env)
     final = package_directory(env / LOCAL_MODULES, name)
+    library = ""
+    if link is not None:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        temporary = link.with_name(f".{link.name}.pulley")
+        temporary.write_text(str(final.resolve()) + "\n", encoding="utf-8")
+        os.replace(temporary, link)
+        library = str(link)
+    elif (previous or {}).get("library"):
+        old_link = Path(previous["library"])
+        if owns_library(where, name, old_link):
+            old_link.unlink(missing_ok=True)
     note = f"Installed by Pulley for {where.name} install {name}; `pulley uninstall {name}" + \
            (" --system" if where.name == "system" else "") + "` removes it."
     launchers = {}
@@ -265,7 +315,9 @@ def install(where: Scope, dependency: manifests.Dependency, resolve, force: bool
         "distribution": f"{root.author}.{root.name}" if root.kind == "registry" else "",
         "package": label,
         "source": dependency.describe(),
+        "library": library,
         "commands": launchers,
+        "available": sorted(available),
         "installed": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     (env / RECORD).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
@@ -284,6 +336,8 @@ def _drop_command(where: Scope, owner: str, command: str) -> None:
 
 def uninstall(where: Scope, name: str) -> dict:
     record = records(where).get(name, {})
+    if record.get("library") and owns_library(where, name, Path(record["library"])):
+        Path(record["library"]).unlink(missing_ok=True)
     for command, path in record.get("commands", {}).items():
         if launcher_owner(Path(path)) == name:
             Path(path).unlink(missing_ok=True)

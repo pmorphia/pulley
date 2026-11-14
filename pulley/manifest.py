@@ -28,7 +28,7 @@
     test = "flywheel --test"
 
     [commands]
-    app = "cli.fw"            # `pulley install` puts an `app` command on PATH that runs cli.fw
+    app = "cli.fw"            # `pulley pull author.app -b` puts an `app` command on PATH that runs cli.fw
 
 The dependency key is the import name: ``import shapes``.
 """
@@ -40,7 +40,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import MANIFEST, PulleyError
+from .config import DEFAULT_AUTHOR, MANIFEST, PulleyError
 from .versions import Constraint, ConstraintError
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -94,6 +94,8 @@ def _quote(text: str) -> str:
 def parse_address(text: str) -> tuple[str, str, str | None, str]:
     """Splits ``author.name[@registry|#path][=constraint]`` (or ``author.name constraint``).
 
+    Without an author (``name``), the author is polymorphia.
+
     Returns (author, name, registry or None, constraint).
     """
     text = text.strip()
@@ -117,7 +119,7 @@ def parse_address(text: str) -> tuple[str, str, str | None, str]:
     elif rest:
         constraint = rest.strip()
     if "." not in package:
-        raise PulleyError(f"'{text}' needs an author: author.{package}")
+        package = f"{DEFAULT_AUTHOR}.{package}"  # `driveshaft` is polymorphia.driveshaft
     author, name = package.lower().split(".", 1)
     for part in (author, name):
         if not NAME.match(part):

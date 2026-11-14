@@ -102,7 +102,7 @@ On Windows, the equivalent is `py -m venv %USERPROFILE%\.venvs\pulley`, then `%U
 
 ## Connecting Pulley to Flywheel
 
-Pulley uses the `flywheel` it finds on `PATH`. It installs global packages (`pulley install -g`) into the `modules` directory of that Flywheel installation. If Flywheel isn't on `PATH`, or you have more than one installation, tell Pulley which one to use:
+Pulley uses the `flywheel` it finds on `PATH`. Libraries you pull (`pulley pull name`) are linked from the `modules` directory of that Flywheel installation, which the compiler searches for every program. If Flywheel isn't on `PATH`, or you have more than one installation, tell Pulley which one to use:
 
 ```sh
 pulley config flywheel ~/.local/flywheel/bin/flywheel
@@ -114,14 +114,15 @@ On Windows:
 pulley config flywheel "$env:LOCALAPPDATA\Programs\Flywheel\bin\flywheel.exe"
 ```
 
-Alternatively, set `PULLEY_FLYWHEEL` (the compiler) or `FLYWHEEL_HOME` (the installation directory). The compiler also uses `FLYWHEEL_HOME` to find global packages.
+Alternatively, set `PULLEY_FLYWHEEL` (the compiler) or `FLYWHEEL_HOME` (the installation directory). The compiler also uses `FLYWHEEL_HOME` to find pulled libraries.
 
 ## First project
 
 ```sh
 pulley new app
 cd app
-pulley add wednesware.shapes
+# list dependencies in pulley.toml, such as: shapes = "wednesware.shapes=^1.2"
+pulley pull
 flywheel app.fw
 ```
 
