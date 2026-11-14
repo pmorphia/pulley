@@ -216,8 +216,8 @@ def cmd_init(args) -> None:
 
 GAME_TEMPLATE = """# {name}: a game made with Aperture.
 #
-#     pulley run start        (or: flywheel run {main})
-#     flywheel build {main} -O3 -o {name}
+#     pulley run start        (or: flywheel {main})
+#     flywheel --build {main} -O3 -o {name}
 import aperture as ap
 import math
 
@@ -266,7 +266,7 @@ def _game_template(directory: Path, name: str, main: str) -> list[str]:
     """A project that opens a window and plays: Aperture as a dependency, a game loop, assets/."""
     manifest = directory / MANIFEST
     manifests.set_value(manifest, "dependencies", "aperture", '"polymorphia.aperture=^1.0.0"')
-    manifests.set_value(manifest, "scripts", "start", f'"flywheel run {main}"')
+    manifests.set_value(manifest, "scripts", "start", f'"flywheel {main}"')
     created = []
     if not (directory / main).exists():
         (directory / main).write_text(GAME_TEMPLATE.format(name=name, main=main), encoding="utf-8")

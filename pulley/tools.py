@@ -69,9 +69,9 @@ def launcher_path(directory: Path, command: str) -> Path:
 def _launcher(flywheel: Path, program: Path, owner: str, note: str) -> str:
     if WINDOWS:
         return (f"@echo off\r\nrem {MARK} {owner}\r\nrem {note}\r\n"
-                f'"{flywheel}" run "{program}" -- %*\r\n')
+                f'"{flywheel}" "{program}" -- %*\r\n')
     return (f"#!/bin/sh\n# {MARK} {owner}\n# {note}\n"
-            f"exec {shlex.quote(str(flywheel))} run {shlex.quote(str(program))} -- \"$@\"\n")
+            f"exec {shlex.quote(str(flywheel))} {shlex.quote(str(program))} -- \"$@\"\n")
 
 
 def launcher_owner(path: Path) -> str | None:

@@ -115,7 +115,7 @@ class CommandTests(unittest.TestCase):
         return directory
 
     def run_flywheel(self, program: Path) -> str:
-        result = subprocess.run([FLYWHEEL, "run", program], env=self.env, capture_output=True, text=True, timeout=120)
+        result = subprocess.run([FLYWHEEL, "--run", program], env=self.env, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
@@ -132,7 +132,7 @@ class CommandTests(unittest.TestCase):
         self.assertIn("pulley run start", result.stdout + result.stderr)
         manifest = (game / "pulley.toml").read_text()
         self.assertIn('aperture = "polymorphia.aperture=^1.0.0"', manifest)
-        self.assertIn('start = "flywheel run orbit.fw"', manifest)
+        self.assertIn('start = "flywheel orbit.fw"', manifest)
         source = (game / "orbit.fw").read_text()
         self.assertIn("import aperture as ap", source)
         self.assertIn('"SCORE {score}"', source)

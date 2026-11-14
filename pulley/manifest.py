@@ -25,7 +25,7 @@
     fixtures = "danny.fixtures"
 
     [scripts]
-    test = "flywheel test"
+    test = "flywheel --test"
 
     [commands]
     app = "cli.fw"            # `pulley install` puts an `app` command on PATH that runs cli.fw
@@ -246,7 +246,7 @@ def template(name: str, author: str, main: str) -> str:
         "\n[dependencies]\n"
         "\n[dev-dependencies]\n"
         "\n[scripts]\n"
-        'test = "flywheel test"\n'
+        'test = "flywheel --test"\n'
     )
 
 

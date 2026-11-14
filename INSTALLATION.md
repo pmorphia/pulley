@@ -122,7 +122,7 @@ Alternatively, set `PULLEY_FLYWHEEL` (the compiler) or `FLYWHEEL_HOME` (the inst
 pulley new app
 cd app
 pulley add wednesware.shapes
-flywheel run app.fw
+flywheel app.fw
 ```
 
 See [README.md](README.md) for the full command reference.

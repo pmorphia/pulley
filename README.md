@@ -16,7 +16,7 @@ distribution is called `fw-pulley`.)
 pipx install ./pulley        # or: pip install ./pulley
 pulley new app && cd app
 pulley add wednesware.shapes # records shapes = "wednesware.shapes=^1.2.0" and installs it
-flywheel run app.fw          # import shapes
+flywheel app.fw          # import shapes
 ```
 
 Requirements: Python 3.12+ and `git` for git dependencies. Hydrogen is bundled with Pulley (as
