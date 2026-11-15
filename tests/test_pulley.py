@@ -508,6 +508,28 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("'nosuch' is not a dependency", result.stderr)
 
+    def test_pull_prunes_hand_removed_dependencies(self):
+        # A dependency deleted from pulley.toml by hand (not with `pulley remove`) is removed,
+        # with its own dependencies, by the next pull; directories Pulley did not install stay.
+        self.pulley("registry", self.local)
+        self.publish_math()
+        app = self.root / "app"
+        self.pulley("new", app, "--author", "acme")
+        self.depend(app, "acme.geo")
+        modules = app / ".flywheel-modules"
+        (modules / "mine").mkdir()
+        (modules / "mine" / "mine.fw").write_text("print 1\n")
+        manifests.remove_value(app / "pulley.toml", "dependencies", "geo")
+        output = self.pulley("pull", cwd=app).stdout
+        self.assertIn("removed geo", output)
+        self.assertIn("removed mathx", output)
+        self.assertFalse((modules / "geo").exists())
+        self.assertFalse((modules / "mathx").exists())
+        self.assertTrue((modules / "mine" / "mine.fw").is_file())
+        lock = (app / "pulley.lock").read_text()
+        self.assertNotIn("acme.geo", lock)
+        self.assertNotIn("acme.mathx", lock)
+
     def test_update_named_package(self):
         self.pulley("registry", self.local)
         self.publish_math()
