@@ -224,7 +224,7 @@ ap.close()
 def _game_template(directory: Path, name: str, main: str) -> list[str]:
     """A project that opens a window and plays: Aperture as a dependency, a game loop, assets/."""
     manifest = directory / MANIFEST
-    manifests.set_value(manifest, "dependencies", "aperture", '"polymorphia.aperture=^1.0.0"')
+    manifests.set_value(manifest, "dependencies", "aperture", '"polymorphia.aperture"')
     manifests.set_value(manifest, "scripts", "start", f'"flywheel {main}"')
     created = []
     if not (directory / main).exists():

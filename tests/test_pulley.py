@@ -145,7 +145,7 @@ class CommandTests(unittest.TestCase):
         result = self.pulley("new", game, "--author", "acme", "--game")
         self.assertIn("pulley run start", result.stdout + result.stderr)
         manifest = (game / "pulley.toml").read_text()
-        self.assertIn('aperture = "polymorphia.aperture=^1.0.0"', manifest)
+        self.assertIn('aperture = "polymorphia.aperture"\n', manifest)
         self.assertIn('start = "flywheel orbit.fw"', manifest)
         source = (game / "orbit.fw").read_text()
         self.assertIn("import aperture as ap", source)
