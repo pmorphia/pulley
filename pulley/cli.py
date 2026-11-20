@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from . import __version__
@@ -19,6 +20,7 @@ from . import manifest as manifests
 from . import package as packaging
 from . import tools
 from .config import LOCAL_MODULES, MANIFEST, PulleyError
+from .progress import progress
 from .registry import Registry
 from .resolver import Resolver
 from .versions import Constraint, Version, best, caret
@@ -33,22 +35,33 @@ def _paint(text: str, code: str) -> str:
     return f"\033[{code}m{text}\033[0m" if _COLOR else text
 
 
+# Everything printed first erases the status line (see progress.py) that it would run into.
+
 def say(message: str) -> None:
     if not QUIET:
+        progress.clear()
         print(message)
 
 
 def step(message: str) -> None:
     if not QUIET:
+        progress.clear()
         print(_paint("  " + message, "90"))
 
 
 def done(message: str) -> None:
+    progress.clear()
     print(_paint("✓ ", "32") + message if _COLOR else message)
 
 
 def warn(message: str) -> None:
+    progress.clear()
     print(_paint("warning: ", "33") + message, file=sys.stderr)
+
+
+def _took(start: float) -> str:
+    seconds = time.monotonic() - start
+    return f"{seconds * 1000:.0f}ms" if seconds < 1 else f"{seconds:.1f}s"
 
 
 # Targets: a project's dependencies (.flywheel-modules) ---------------------------------------
@@ -82,7 +95,8 @@ def resolve_into(directory: Path, args, update: set[str] | None = None, update_a
     registry = _registry_name(args, manifest)
     lock = installer.read_lock(directory)
     resolver = Resolver(manifest, registry, lock, update=update, update_all=update_all,
-                        include_dev=not production, log=step if getattr(args, "verbose", False) else (lambda m: None))
+                        include_dev=not production, log=step if getattr(args, "verbose", False) else (lambda m: None),
+                        announce=step)
     packages = resolver.resolve()
     if frozen:
         def state(entry_version, entry_commit, aliases):
@@ -99,15 +113,17 @@ def resolve_into(directory: Path, args, update: set[str] | None = None, update_a
 
 
 def install_target(target: Target, args, update: set[str] | None = None, update_all: bool = False) -> None:
+    start = time.monotonic()
     production = getattr(args, "production", False)
     manifest, packages, counts = resolve_into(target.directory, args, update, update_all, production=production,
                                               frozen=getattr(args, "frozen", False))
     direct = [d.alias for d in manifest.all_dependencies(dev=not production)]
+    progress.status("setting up dependency commands")
     commands = tools.project_launchers(target.modules, direct, log=warn)
     total = sum(1 for p in packages.values() if not (p.dev and production))
     changes = ", ".join(f"{n} {kind}" for kind, n in counts.items() if n and kind != "unchanged")
     done(f"{total} package(s) installed in {target.modules}" + (f" ({changes})" if changes else "")
-         + (f"; {commands} command(s) for `pulley run`" if commands else ""))
+         + (f"; {commands} command(s) for `pulley run`" if commands else "") + f" in {_took(start)}")
 
 
 # Dependency specs given on the command line -------------------------------------------------
@@ -288,6 +304,7 @@ def _ask(question: str) -> bool:
     """A yes/no question on the terminal; no when nobody can answer."""
     if not sys.stdin.isatty():
         return False
+    progress.clear()
     try:
         answer = input(f"{question} [y/N] ").strip().lower()
     except EOFError:
@@ -340,6 +357,8 @@ def _pull_packages(args, deps: list[manifests.Dependency] | None = None, verb: s
     where = _scope(args)
     resolve = lambda directory: resolve_into(directory, args, update_all=True, production=True, copy_paths=True)[1]
     for dep in deps if deps is not None else _pulled_dependencies(args):
+        start = time.monotonic()
+        progress.status(f"pulling {_again(dep)} for {where.describe()}")
         record = tools.install(where, dep, resolve, _chooser(args, _again(dep), keep), force=getattr(args, "force", False), log=step)
         provides = []
         if record.get("library"):
@@ -347,7 +366,7 @@ def _pull_packages(args, deps: list[manifests.Dependency] | None = None, verb: s
         names = ", ".join(record["commands"])
         if names:
             provides.append(f"command(s) {names} for {where.describe()}")
-        done(f"{verb} {record['package']}: " + " and ".join(provides))
+        done(f"{verb} {record['package']}: " + " and ".join(provides) + f" in {_took(start)}")
         for command, path in record["commands"].items():
             other = tools.shadowed(command, Path(path))
             if other:
@@ -501,10 +520,10 @@ def cmd_outdated(args) -> None:
     lock = installer.read_lock(target.directory)
     requirements = {d.alias: d for d in manifest.all_dependencies()}
     rows = []
-    for key, entry in sorted(lock.items(), key=lambda kv: kv[1]["aliases"]):
-        if entry["source"] != "registry":
-            continue
+    checked = [(k, e) for k, e in sorted(lock.items(), key=lambda kv: kv[1]["aliases"]) if e["source"] == "registry"]
+    for number, (key, entry) in enumerate(checked, 1):
         _, registry, author, name = key
+        progress.status(f"checking {author}.{name} ({number}/{len(checked)})")
         versions = Registry(registry).versions(author, name)
         newest = best(versions, [Constraint("*")]) or entry["version"]
         direct = [requirements[a] for a in entry["aliases"] if a in requirements]
@@ -525,6 +544,7 @@ def cmd_info(args) -> None:
     author, name, registry, constraint = manifests.parse_address(args.address)
     manifest = manifests.load(cfg.find_project()) if cfg.find_project() else None
     r = Registry(registry or _registry_name(args, manifest))
+    progress.status(f"asking {r} about {author}.{name}")
     versions = sorted(r.versions(author, name), key=Version.parse)
     chosen = best(versions, [Constraint(constraint)]) if constraint not in ("*", "latest") else (r.latest(author, name) or (versions[-1] if versions else None))
     if not chosen:
@@ -547,8 +567,10 @@ def cmd_publish(args) -> None:
     packaging.check(manifest)
     registry = Registry(_registry_name(args, manifest))
     address = registry.address(manifest.author, manifest.name, manifest.version)
+    start = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="pulley-publish-") as temporary:
         staged = Path(temporary) / manifest.name
+        progress.status("collecting the package's files")
         files = packaging.stage(manifest, staged)
         size = sum((staged / f).stat().st_size for f in files)
         say(f"{address}: {len(files)} file(s), {size} bytes")
@@ -557,6 +579,7 @@ def cmd_publish(args) -> None:
                 step(f.as_posix())
         if args.dry_run:
             archive = Path(temporary) / "release.tar.gz"
+            progress.status("packing the archive")
             packaging.pack(manifest, archive)
             done(f"dry run: the archive would be {archive.stat().st_size} bytes; nothing was published")
             return
@@ -565,10 +588,11 @@ def cmd_publish(args) -> None:
             raise PulleyError(f"not logged in to {registry}; run `pulley login --registry {registry}`")
         if not registry.local and username != manifest.author:
             warn(f"publishing as '{username}' to author '{manifest.author}'; the registry decides whether that is allowed")
+        progress.status(f"uploading {address}")
         for line in registry.publish(staged, manifest.author, manifest.name, manifest.version, username, password,
                                      verbose=args.verbose):
             step(line)
-    done(f"published {manifest.author}.{manifest.name}={manifest.version} to {registry}")
+    done(f"published {manifest.author}.{manifest.name}={manifest.version} to {registry} in {_took(start)}")
 
 
 def cmd_pack(args) -> None:
@@ -578,6 +602,7 @@ def cmd_pack(args) -> None:
     manifest = manifests.load(project)
     packaging.check(manifest)
     archive = Path(args.output or f"{manifest.author}.{manifest.name}-{manifest.version}.tar.gz").resolve()
+    progress.status(f"packing {archive.name}")
     files = packaging.pack(manifest, archive)
     done(f"wrote {archive} ({len(files)} file(s), {archive.stat().st_size} bytes)")
 
@@ -875,17 +900,22 @@ def main(argv: list[str] | None = None) -> int:
     global QUIET
     arguments = parser().parse_args(argv)
     QUIET = arguments.quiet
+    progress.enable(False if QUIET else None)
     if not getattr(arguments, "function", None):
         parser().print_help()
         return 2
     try:
         arguments.function(arguments)
     except PulleyError as exc:
+        progress.clear()
         print(_paint("error: ", "31") + str(exc), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
+        progress.clear()
         print(file=sys.stderr)
         return 130
+    finally:
+        progress.clear()
     return 0
 
 

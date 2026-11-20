@@ -19,6 +19,7 @@ from pathlib import Path
 
 from . import manifest as manifests
 from .config import MANIFEST, PulleyError, cache_dir
+from .progress import progress, size
 from .registry import Registry, extract
 from .versions import Constraint, best
 
@@ -61,8 +62,9 @@ def _safe(text: str) -> str:
 class Cache:
     """Downloaded archives and their extracted contents, shared by all projects."""
 
-    def __init__(self, root: Path | None = None):
+    def __init__(self, root: Path | None = None, log=None):
         self.root = root or cache_dir()
+        self.log = log or (lambda message: None)  # lasting lines: downloads
 
     def registry_package(self, registry: Registry, author: str, name: str, version: str,
                          expected_sha: str = "") -> tuple[Path, str]:
@@ -73,7 +75,10 @@ class Cache:
             sha = marker.read_text().strip()
             if not expected_sha or sha == expected_sha:
                 return base / "contents", sha
+        label = f"{author}.{name}={version}"
+        progress.status(f"finding {label}")
         release = registry.release(author, name, version)
+        progress.status(f"downloading {label}")
         if expected_sha and release.sha256 and release.sha256 != expected_sha:
             raise PulleyError(
                 f"{author}.{name}={version} on {registry} has checksum {release.sha256}, but "
@@ -81,7 +86,9 @@ class Cache:
                 "(run `pulley update` to accept it)"
             )
         archive = self.root / "archives" / f"{_safe(registry.spec)}-{author}.{name}-{_safe(version)}.tar.gz"
-        sha = registry.download(release, archive)
+        sha = registry.download(release, archive, progress.transfer)
+        self.log(f"downloaded {label} ({size(archive.stat().st_size)})")
+        progress.status(f"unpacking {label}")
         if expected_sha and sha != expected_sha:
             raise PulleyError(f"{author}.{name}={version} does not match the checksum in pulley.lock")
         if base.exists():
@@ -114,10 +121,13 @@ class Cache:
 
         if not (clone / ".git").is_dir():
             clone.parent.mkdir(parents=True, exist_ok=True)
+            progress.status(f"cloning {url}")
             git("clone", "--quiet", url, str(clone), cwd=None)
+            self.log(f"cloned {url}")
         # A locked commit is used as is; otherwise fetch and read the branch, tag, or commit.
         resolved = commit_of(commit) if commit else ""
         if not resolved:
+            progress.status(f"fetching {url}")
             git("fetch", "--quiet", "--tags", "--force", "origin")
             target = commit or rev or "HEAD"
             resolved = commit_of(f"origin/{target}") or commit_of(target)
@@ -125,6 +135,7 @@ class Cache:
                 raise PulleyError(f"git revision '{target}' not found in {url}")
         export = self.root / "git-exports" / resolved
         if not export.is_dir():
+            progress.status(f"checking out {url} at {resolved[:12]}")
             temporary = export.with_name(resolved + ".part")
             if temporary.exists():
                 shutil.rmtree(temporary)
@@ -143,15 +154,15 @@ class Cache:
 class Resolver:
     def __init__(self, project: manifests.Manifest, default_registry: str, lock: dict | None = None,
                  update: set[str] | None = None, update_all: bool = False, include_dev: bool = True,
-                 cache: Cache | None = None, log=None):
+                 cache: Cache | None = None, log=None, announce=None):
         self.project = project
         self.default_registry = default_registry
         self.lock = lock or {}
         self.update = update or set()
         self.update_all = update_all
         self.include_dev = include_dev
-        self.cache = cache or Cache()
-        self.log = log or (lambda message: None)
+        self.log = log or (lambda message: None)  # resolution steps (--verbose)
+        self.cache = cache or Cache(log=announce)
         self.registries: dict[str, Registry] = {}
         self.version_lists: dict[tuple, list[str]] = {}
         # key -> {requester: (constraint, alias)}
@@ -200,6 +211,7 @@ class Resolver:
         if key not in self.version_lists:
             _, registry, author, name = key
             self.log(f"resolving {author}.{name} on {registry}")
+            progress.status(f"resolving {author}.{name}")
             self.version_lists[key] = self.registry(registry).versions(author, name)
         return self.version_lists[key]
 
@@ -274,6 +286,7 @@ class Resolver:
 
     def resolve(self) -> dict[tuple, Package]:
         root_deps = self.project.all_dependencies(dev=self.include_dev)
+        progress.status(f"resolving {len(root_deps)} dependenc{'y' if len(root_deps) == 1 else 'ies'}")
         self._add_requests(None, root_deps, self.project.directory, self.default_registry)
         for _ in range(200):
             changed = False

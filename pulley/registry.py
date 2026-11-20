@@ -151,17 +151,23 @@ class Registry:
                     size = int(artifact.get("size") or 0)
         return Release(author, name, version, location, sha256.lower(), size)
 
-    def download(self, release: Release, destination: Path) -> str:
-        """Copies or downloads a release archive and returns its SHA-256."""
+    def download(self, release: Release, destination: Path, progress=None) -> str:
+        """Copies or downloads a release archive and returns its SHA-256.
+
+        `progress(done, total)` hears the bytes so far (total is 0 when unknown).
+        """
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(destination.suffix + ".part")
         try:
             if self.local or os.path.isfile(release.location):
-                shutil.copyfile(release.location, temporary)
+                with open(release.location, "rb") as source, open(temporary, "wb") as out:
+                    _copy(source, out, release.size or os.path.getsize(release.location), progress)
             else:
                 try:
                     with _request(release.location) as response, open(temporary, "wb") as out:
-                        shutil.copyfileobj(response, out)
+                        length = response.headers.get("Content-Length") if response.headers else None
+                        total = int(length) if length and length.isdigit() else release.size
+                        _copy(response, out, total, progress)
                 except urllib.error.HTTPError as exc:
                     raise PulleyError(f"downloading {release.location} failed: HTTP {exc.code}") from None
                 except urllib.error.URLError as exc:
@@ -228,6 +234,17 @@ class Registry:
             raise PulleyError(f"could not create user '{username}' on {self.spec}: HTTP {exc.code} {detail}") from None
         except urllib.error.URLError as exc:
             raise PulleyError(f"cannot reach registry {self.spec}: {exc.reason}") from None
+
+
+def _copy(source, out, total: int, progress=None) -> None:
+    done = 0
+    if progress:
+        progress(0, total)
+    for block in iter(lambda: source.read(1 << 16), b""):
+        out.write(block)
+        done += len(block)
+        if progress:
+            progress(done, total)
 
 
 def _sha256_file(path: Path) -> str:

@@ -51,6 +51,29 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(Version.parse("1.2"), Version.parse("1.2.0"))
 
 
+class ProgressTests(unittest.TestCase):
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    def test_status_line(self):
+        from pulley.progress import Progress, size
+        self.assertEqual([size(512), size(12_595), size(4 << 20)], ["512 B", "12.3 KB", "4.0 MB"])
+        quiet = Progress(io.StringIO())
+        quiet.enable()
+        quiet.status("resolving")
+        self.assertEqual(quiet.stream.getvalue(), "")
+        terminal = Progress(self.Terminal())
+        terminal.enable()
+        terminal.status("downloading acme.geo=1.0.0")
+        terminal.transfer(512, 1024)
+        terminal._draw()
+        terminal.clear()
+        out = terminal.stream.getvalue()
+        self.assertIn("downloading acme.geo=1.0.0  512 B / 1.0 KB (50%)", out)
+        self.assertTrue(out.endswith("\r\033[K"))  # erased at the end
+
+
 class ManifestTests(unittest.TestCase):
     def test_addresses(self):
         self.assertEqual(manifests.parse_address("a.b"), ("a", "b", None, "*"))
@@ -164,7 +187,11 @@ class CommandTests(unittest.TestCase):
         self.publish_math()
         app = self.root / "app"
         self.pulley("new", app, "--author", "acme")
-        self.depend(app, "acme.geo")
+        pulled = self.depend(app, "acme.geo")
+        # Downloads are reported; the status line stays off when output isn't a terminal.
+        self.assertIn("downloaded acme.geo=1.0.0 (", pulled.stdout)
+        self.assertIn("added mathx (acme.mathx=1.0.0)", pulled.stdout)
+        self.assertNotIn("\r", pulled.stdout + pulled.stderr)
         lock = (app / "pulley.lock").read_text()
         self.assertIn('distribution = "acme.mathx"\nversion = "1.0.0"', lock)  # ~1.0 from geo
         self.assertTrue((app / ".flywheel-modules" / "geo" / "geo.fw").is_file())

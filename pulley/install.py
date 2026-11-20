@@ -15,6 +15,7 @@ import tomllib
 from pathlib import Path
 
 from .config import LOCKFILE, PulleyError
+from .progress import progress
 from .resolver import Package
 
 RECORD = ".pulley.json"
@@ -125,7 +126,8 @@ def sync(modules: Path, packages: dict[tuple, Package], include_dev: bool = True
             wanted[alias] = package
     current = installed(modules)
     counts = {"added": 0, "updated": 0, "removed": 0, "unchanged": 0}
-    for alias, package in sorted(wanted.items()):
+    for number, (alias, package) in enumerate(sorted(wanted.items()), 1):
+        progress.status(f"installing {alias} ({number}/{len(wanted)})")
         directory, link = modules / alias, modules / f"{alias}.link"
         previous = current.get(alias)
         if package.kind == "path" and not copy_paths:
@@ -165,6 +167,7 @@ def sync(modules: Path, packages: dict[tuple, Package], include_dev: bool = True
         counts["updated" if previous else "added"] += 1
         log(("updated" if previous else "added") + f" {alias} ({package.label})")
     for alias in sorted(set(current) - set(wanted)):
+        progress.status(f"removing {alias}")
         _remove(modules / alias)
         _remove(modules / f"{alias}.link")
         counts["removed"] += 1
