@@ -6,4 +6,4 @@ project's ``.flywheel-modules`` directory, or, pulled by name, as libraries link
 commands on PATH.
 """
 
-__version__ = "2.2"
+__version__ = "2.3"
