@@ -9,6 +9,7 @@
     description = "An example"
     main = "app.fw"           # the module `import app` loads; default <name>.fw
     license = "MIT"
+    unlisted = true           # optional: published, but left out of listings (pulley.polymorphia.dev)
 
     [registry]
     default = "wednesware.org"   # optional: the registry for dependencies without one
@@ -173,6 +174,7 @@ class Manifest:
     description: str = ""
     main: str = ""
     license: str = ""
+    unlisted: bool = False  # installable by address, but not shown in package listings
     registry: str | None = None
     dependencies: dict[str, Dependency] = field(default_factory=dict)
     dev_dependencies: dict[str, Dependency] = field(default_factory=dict)
@@ -199,6 +201,9 @@ def load(directory: Path) -> Manifest:
     except tomllib.TOMLDecodeError as exc:
         raise PulleyError(f"{path}: {exc}") from None
     package = data.get("package", {})
+    unlisted = package.get("unlisted", False)
+    if not isinstance(unlisted, bool):
+        raise PulleyError(f"{path}: [package] unlisted must be true or false")
     manifest = Manifest(
         directory=Path(directory).resolve(),
         name=str(package.get("name", "")),
@@ -207,6 +212,7 @@ def load(directory: Path) -> Manifest:
         description=str(package.get("description", "")),
         main=str(package.get("main", "")),
         license=str(package.get("license", "")),
+        unlisted=unlisted,
         registry=(data.get("registry") or {}).get("default"),
         scripts={str(k): str(v) for k, v in (data.get("scripts") or {}).items()},
     )

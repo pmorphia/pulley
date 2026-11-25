@@ -102,6 +102,16 @@ class ManifestTests(unittest.TestCase):
             m = manifests.load(Path(directory))
             self.assertEqual(sorted(m.dependencies), ["new", "old"])
             self.assertEqual(list(m.dev_dependencies), ["t"])
+            self.assertFalse(m.unlisted)
+
+    def test_unlisted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pulley.toml"
+            path.write_text('[package]\nname = "x"\nunlisted = true\n')
+            self.assertTrue(manifests.load(Path(directory)).unlisted)
+            path.write_text('[package]\nname = "x"\nunlisted = "yes"\n')
+            with self.assertRaises(PulleyError):
+                manifests.load(Path(directory))
 
 
 class CommandTests(unittest.TestCase):

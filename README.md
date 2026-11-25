@@ -69,6 +69,7 @@ description = "An example"
 main = "app.fw"           # what `import app` loads (default <name>.fw)
 license = "MIT"
 exclude = ["drafts/*"]    # files left out of published releases
+unlisted = true           # optional: keep it out of package listings
 
 [registry]
 default = "wednesware.org"    # optional, for this project
@@ -179,6 +180,12 @@ the system keyring when `keyring` is installed, otherwise in a file readable onl
 (`credentials.json` in Pulley's configuration directory). `PULLEY_AUTH_USER` and
 `PULLEY_AUTH_PASSWORD` (or Hydrogen's `DISTROBASE_AUTH_USER` / `DISTROBASE_AUTH_PASSWORD`)
 override them, for CI.
+
+`unlisted = true` in `[package]` keeps a package out of the listings on
+[pulley.polymorphia.dev](https://pulley.polymorphia.dev): its packages list, user pages, search, and
+counts. It is still published normally, so anyone with its address can install it or open its page
+directly; it is not private. The flag is read from each release's `pulley.toml`, so it takes
+effect with the next release (publish a new version without it to list the package again).
 
 Distrobase has no search endpoint, so Pulley has no `search` command.
 

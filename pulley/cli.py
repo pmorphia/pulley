@@ -593,6 +593,8 @@ def cmd_publish(args) -> None:
                                      verbose=args.verbose):
             step(line)
     done(f"published {manifest.author}.{manifest.name}={manifest.version} to {registry} in {_took(start)}")
+    if manifest.unlisted:
+        say("it is unlisted: installable by its address, but left out of package listings")
 
 
 def cmd_pack(args) -> None:
