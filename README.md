@@ -70,6 +70,7 @@ main = "app.fw"           # what `import app` loads (default <name>.fw)
 license = "MIT"
 exclude = ["drafts/*"]    # files left out of published releases
 unlisted = true           # optional: keep it out of package listings
+icon = "icon.png"         # optional: shown next to the package on pulley.polymorphia.dev
 
 [registry]
 default = "wednesware.org"    # optional, for this project
@@ -202,6 +203,11 @@ the system keyring when `keyring` is installed, otherwise in a file readable onl
 (`credentials.json` in Pulley's configuration directory). `PULLEY_AUTH_USER` and
 `PULLEY_AUTH_PASSWORD` (or Hydrogen's `DISTROBASE_AUTH_USER` / `DISTROBASE_AUTH_PASSWORD`)
 override them, for CI.
+
+`icon` in `[package]` names an image in the package (PNG, JPEG, GIF, WebP or SVG, at most
+128 KB; square, such as 128×128, looks best). pulley.polymorphia.dev shows it in package listings,
+on the package's page, and next to it wherever another package depends on it. Publishing checks
+that the file exists and is not left out by `exclude`.
 
 `unlisted = true` in `[package]` keeps a package out of the listings on
 [pulley.polymorphia.dev](https://pulley.polymorphia.dev): its packages list, user pages, search, and

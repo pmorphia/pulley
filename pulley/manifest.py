@@ -10,6 +10,7 @@
     main = "app.fw"           # the module `import app` loads; default <name>.fw
     license = "MIT"
     unlisted = true           # optional: published, but left out of listings (pulley.polymorphia.dev)
+    icon = "icon.png"         # optional: a square PNG, JPEG, GIF, WebP or SVG of at most 128 KB
 
     [registry]
     default = "wednesware.org"   # optional: the registry for dependencies without one
@@ -175,6 +176,7 @@ class Manifest:
     main: str = ""
     license: str = ""
     unlisted: bool = False  # installable by address, but not shown in package listings
+    icon: str = ""  # an image file in the package, shown by package listings
     registry: str | None = None
     dependencies: dict[str, Dependency] = field(default_factory=dict)
     dev_dependencies: dict[str, Dependency] = field(default_factory=dict)
@@ -213,6 +215,7 @@ def load(directory: Path) -> Manifest:
         main=str(package.get("main", "")),
         license=str(package.get("license", "")),
         unlisted=unlisted,
+        icon=_icon(path, package.get("icon", "")),
         registry=(data.get("registry") or {}).get("default"),
         scripts={str(k): str(v) for k, v in (data.get("scripts") or {}).items()},
     )
@@ -227,6 +230,28 @@ def load(directory: Path) -> Manifest:
     return manifest
 
 
+ICON_TYPES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
+ICON_LIMIT = 128 * 1024
+
+
+def _inside(relative: str) -> bool:
+    parts = relative.split("/")
+    return bool(relative) and not relative.startswith("/") and ":" not in parts[0] and ".." not in parts
+
+
+def _icon(path: Path, value) -> str:
+    if value in ("", None):
+        return ""
+    if not isinstance(value, str):
+        raise PulleyError(f"{path}: [package] icon must name an image file, like \"icon.png\"")
+    relative = value.strip().replace("\\", "/").removeprefix("./")
+    if not _inside(relative):
+        raise PulleyError(f"{path}: [package] icon must name a file inside the package, not {value!r}")
+    if not relative.lower().endswith(ICON_TYPES):
+        raise PulleyError(f"{path}: [package] icon must be a PNG, JPEG, GIF, WebP or SVG image, not {value!r}")
+    return relative
+
+
 def _commands(path: Path, table) -> dict[str, str]:
     if not isinstance(table, dict):
         raise PulleyError(f"{path}: [commands] must be a table of name = \"program.fw\"")
@@ -237,7 +262,7 @@ def _commands(path: Path, table) -> dict[str, str]:
         if not isinstance(program, str) or not program.strip():
             raise PulleyError(f"{path}: command '{name}' must name a program file, like \"cli.fw\"")
         relative = program.replace("\\", "/")
-        if relative.startswith("/") or ":" in relative.split("/")[0] or ".." in relative.split("/"):
+        if not _inside(relative):
             raise PulleyError(f"{path}: command '{name}' must name a file inside the package, not {program!r}")
         commands[str(name)] = relative
     return commands

@@ -10,7 +10,7 @@ import tomllib
 from pathlib import Path
 
 from .config import LOCAL_MODULES, LOCKFILE, MANIFEST, PulleyError
-from .manifest import NAME, Manifest, set_value
+from .manifest import ICON_LIMIT, NAME, Manifest, set_value
 from .versions import sbv
 
 ALWAYS_EXCLUDED = {".git", ".hg", ".svn", LOCAL_MODULES, "__pycache__", ".DS_Store", LOCKFILE, "coverage.lcov"}
@@ -63,6 +63,14 @@ def check(manifest: Manifest) -> None:
             problems.append(f"command '{command}' runs {program}, which does not exist")
         elif program not in shipped:
             problems.append(f"command '{command}' runs {program}, which [package] exclude leaves out")
+    if manifest.icon:
+        icon = manifest.directory / manifest.icon
+        if not icon.is_file():
+            problems.append(f"[package] icon {manifest.icon} does not exist")
+        elif manifest.icon not in shipped:
+            problems.append(f"[package] icon {manifest.icon} is left out by [package] exclude")
+        elif icon.stat().st_size > ICON_LIMIT:
+            problems.append(f"[package] icon {manifest.icon} is {icon.stat().st_size // 1024} KB; icons can be at most {ICON_LIMIT // 1024} KB")
     for dep in manifest.dependencies.values():
         if dep.kind == "path":
             problems.append(f"dependency '{dep.alias}' is a path; published packages can only depend on registry or git packages")

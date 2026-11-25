@@ -543,6 +543,25 @@ class CommandTests(unittest.TestCase):
         result = self.pulley("publish", "--registry", self.local, cwd=project, check=False)
         self.assertIn("main module lib.fw does not exist", result.stderr)
 
+    def test_icon(self):
+        project = self.root / "lib"
+        self.pulley("new", project, "--author", "acme")
+        manifest = project / "pulley.toml"
+        text = manifest.read_text()
+        for bad in ('"../icon.png"', '"icon.txt"', "3"):
+            manifest.write_text(text.replace('main = "lib.fw"', f'main = "lib.fw"\nicon = {bad}'))
+            self.assertIn("[package] icon", self.pulley("publish", "--registry", self.local, cwd=project, check=False).stderr)
+        manifest.write_text(text.replace('main = "lib.fw"', 'main = "lib.fw"\nicon = "assets/icon.png"'))
+        self.assertIn("icon assets/icon.png does not exist",
+                      self.pulley("publish", "--registry", self.local, cwd=project, check=False).stderr)
+        (project / "assets").mkdir()
+        (project / "assets" / "icon.png").write_bytes(b"\x89PNG" + bytes(200 * 1024))
+        self.assertIn("icons can be at most 128 KB",
+                      self.pulley("publish", "--registry", self.local, cwd=project, check=False).stderr)
+        (project / "assets" / "icon.png").write_bytes(b"\x89PNG" + bytes(100))
+        self.assertIn("assets/icon.png", self.pulley("publish", "--dry-run", "--registry", self.local, cwd=project).stdout)
+        self.assertEqual(manifests.load(project).icon, "assets/icon.png")
+
     def test_publish_needs_sbv(self):
         project = self.root / "lib"
         self.pulley("new", project, "--author", "acme")
