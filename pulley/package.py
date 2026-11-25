@@ -5,11 +5,13 @@ from __future__ import annotations
 import fnmatch
 import shutil
 import tarfile
+import tempfile
 import tomllib
 from pathlib import Path
 
-from .config import LOCAL_MODULES, LOCKFILE, PulleyError
-from .manifest import NAME, Manifest
+from .config import LOCAL_MODULES, LOCKFILE, MANIFEST, PulleyError
+from .manifest import NAME, Manifest, set_value
+from .versions import sbv
 
 ALWAYS_EXCLUDED = {".git", ".hg", ".svn", LOCAL_MODULES, "__pycache__", ".DS_Store", LOCKFILE, "coverage.lcov"}
 
@@ -48,6 +50,11 @@ def check(manifest: Manifest) -> None:
         problems.append("[package] author must be your Distrobase username (lowercase)")
     if not manifest.version or manifest.version == "latest":
         problems.append("[package] version is required")
+    elif not sbv(manifest.version):
+        problems.append(
+            f"[package] version {manifest.version!r} is not a Stage-Based Version: use <stage>-<n> "
+            "(0-1, alpha-1, beta-2, gamma-1, delta-1, epsilon-1) or <major>.<n> (1.4 is alpha-4)"
+        )
     if not (manifest.directory / manifest.main_module()).is_file():
         problems.append(f"the main module {manifest.main_module()} does not exist (set [package] main)")
     shipped = {f.as_posix() for f in files(manifest)}
@@ -65,20 +72,33 @@ def check(manifest: Manifest) -> None:
         raise PulleyError("cannot publish:\n  " + "\n  ".join(problems))
 
 
+def release_version(manifest: Manifest) -> str:
+    """The version a release is published as: the SBV notation (1.4 publishes as alpha-4)."""
+    return sbv(manifest.version) or manifest.version
+
+
 def stage(manifest: Manifest, destination: Path) -> list[Path]:
-    """Copies the release files into `destination`; returns them."""
+    """Copies the release files into `destination`; returns them.
+
+    The copied pulley.toml carries the release version in SBV notation.
+    """
     selected = files(manifest)
     for relative in selected:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(manifest.directory / relative, target)
+    version = release_version(manifest)
+    if version != manifest.version:
+        set_value(destination / MANIFEST, "package", "version", '"' + version + '"')
     return selected
 
 
 def pack(manifest: Manifest, archive: Path) -> list[Path]:
     """Writes the release archive (as Hydrogen publishes it) to `archive`."""
-    selected = files(manifest)
-    with tarfile.open(archive, "w:gz") as tar:
-        for relative in selected:
-            tar.add(manifest.directory / relative, arcname=relative.as_posix())
+    with tempfile.TemporaryDirectory(prefix="pulley-pack-") as temporary:
+        staged = Path(temporary)
+        selected = stage(manifest, staged)
+        with tarfile.open(archive, "w:gz") as tar:
+            for relative in selected:
+                tar.add(staged / relative, arcname=relative.as_posix())
     return selected

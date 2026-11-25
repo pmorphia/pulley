@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from distrobase import Registry as MockRegistry  # noqa: E402
 from pulley import manifest as manifests  # noqa: E402
 from pulley.config import PulleyError  # noqa: E402
-from pulley.versions import Constraint, Version, best  # noqa: E402
+from pulley.versions import Constraint, Version, best, sbv  # noqa: E402
 
 FLYWHEEL = os.environ.get("FLYWHEEL") or shutil.which("flywheel")
 SOURCE = str(Path(__file__).resolve().parent.parent)
@@ -49,6 +49,19 @@ class VersionTests(unittest.TestCase):
         ordered = sorted(["1.0-beta.10", "1.0", "1.0-beta.2", "1.0-alpha"], key=Version.parse)
         self.assertEqual(ordered, ["1.0-alpha", "1.0-beta.2", "1.0-beta.10", "1.0"])
         self.assertEqual(Version.parse("1.2"), Version.parse("1.2.0"))
+
+    def test_sbv(self):
+        self.assertEqual([sbv(v) for v in ("alpha-4", "1.4", "Beta-2", "0.3", "0-1", "5.1", "epsilon-9")],
+                         ["alpha-4", "alpha-4", "beta-2", "0-3", "0-1", "epsilon-1", "epsilon-9"])
+        for bad in ("1.0.0", "6.1", "1.0", "alpha-0", "alpha", "zeta-1", "01.2", "1.02", "nightly", "1"):
+            self.assertIsNone(sbv(bad), bad)
+        self.assertEqual(Version.parse("alpha-4"), Version.parse("1.4"))
+        self.assertLess(Version.parse("alpha-10"), Version.parse("beta-1"))
+        self.assertEqual(self.allowed("^alpha-2", ["alpha-1", "alpha-2", "alpha-9", "beta-1"]), ["alpha-2", "alpha-9"])
+        self.assertEqual(self.allowed("~alpha-2", ["alpha-2", "alpha-3"]), ["alpha-2"])
+        self.assertEqual(self.allowed(">=alpha-2, <gamma-1", ["alpha-1", "1.3", "beta-7", "gamma-1"]), ["1.3", "beta-7"])
+        self.assertEqual(self.allowed("1.4", ["alpha-4", "alpha-5"]), ["alpha-4"])
+        self.assertEqual(best(["alpha-3", "beta-1", "alpha-12"], [Constraint("^alpha-1")]), "alpha-12")
 
 
 class ProgressTests(unittest.TestCase):
@@ -144,7 +157,7 @@ class CommandTests(unittest.TestCase):
         directory = self.root / "work" / f"{name}-{version}"
         self.pulley("new", directory, "--author", "acme", "--name", name)
         manifest = directory / "pulley.toml"
-        manifest.write_text(manifest.read_text().replace('version = "0.1.0"', f'version = "{version}"'))
+        manifest.write_text(manifest.read_text().replace('version = "alpha-1"', f'version = "{version}"'))
         (directory / f"{name}.fw").write_text(source)
         self.depend(directory, *deps, install=False)
         self.pulley("publish", "--registry", registry or self.local, cwd=directory)
@@ -167,11 +180,11 @@ class CommandTests(unittest.TestCase):
         return result.stdout
 
     def publish_math(self, registry=None):
-        for version in ("1.0.0", "1.1.0", "2.0.0"):
+        for version in ("alpha-1", "alpha-2", "beta-1"):
             self.package("mathx", version, "function double_it(int n) returns int\n    return n * 2\nend\n"
                          f'function version returns string\n    return "{version}"\nend\n', registry=registry)
-        self.package("geo", "1.0.0", "import mathx\nfunction area(int w, int h) returns int\n"
-                     "    return mathx.double_it(w * h) // 2\nend\n", ["acme.mathx=~1.0"], registry=registry)
+        self.package("geo", "alpha-1", "import mathx\nfunction area(int w, int h) returns int\n"
+                     "    return mathx.double_it(w * h) // 2\nend\n", ["acme.mathx=~alpha-1"], registry=registry)
 
     def test_game_template(self):
         game = self.root / "orbit"
@@ -199,11 +212,11 @@ class CommandTests(unittest.TestCase):
         self.pulley("new", app, "--author", "acme")
         pulled = self.depend(app, "acme.geo")
         # Downloads are reported; the status line stays off when output isn't a terminal.
-        self.assertIn("downloaded acme.geo=1.0.0 (", pulled.stdout)
-        self.assertIn("added mathx (acme.mathx=1.0.0)", pulled.stdout)
+        self.assertIn("downloaded acme.geo=alpha-1 (", pulled.stdout)
+        self.assertIn("added mathx (acme.mathx=alpha-1)", pulled.stdout)
         self.assertNotIn("\r", pulled.stdout + pulled.stderr)
         lock = (app / "pulley.lock").read_text()
-        self.assertIn('distribution = "acme.mathx"\nversion = "1.0.0"', lock)  # ~1.0 from geo
+        self.assertIn('distribution = "acme.mathx"\nversion = "alpha-1"', lock)  # ~alpha-1 from geo
         self.assertTrue((app / ".flywheel-modules" / "geo" / "geo.fw").is_file())
         self.assertTrue((app / ".flywheel-modules" / "mathx" / ".pulley.json").is_file())
 
@@ -211,15 +224,15 @@ class CommandTests(unittest.TestCase):
         result = self.depend(app, "acme.mathx=^2", check=False)
         self.assertEqual(result.returncode, 1)
         self.assertIn("no version of acme.mathx", result.stderr)
-        self.assertIn("~1.0 (by acme.geo=1.0.0)", result.stderr)
+        self.assertIn("~alpha-1 (by acme.geo=alpha-1)", result.stderr)
         self.assertEqual((app / "pulley.lock").read_text(), lock)
         manifests.remove_value(app / "pulley.toml", "dependencies", "mathx")
 
         tree = self.pulley("list", "--tree", cwd=app).stdout
-        self.assertIn("geo acme.geo=1.0.0", tree)
-        self.assertIn("└── mathx acme.mathx=1.0.0", tree)
+        self.assertIn("geo acme.geo=alpha-1", tree)
+        self.assertIn("└── mathx acme.mathx=alpha-1", tree)
         outdated = self.pulley("outdated", cwd=app).stdout
-        self.assertIn("2.0.0", outdated)
+        self.assertIn("beta-1", outdated)
 
         # Path, git, and dev dependencies.
         helpers = self.root / "helpers"
@@ -237,7 +250,7 @@ class CommandTests(unittest.TestCase):
         subprocess.run(["git", "tag", "v1"], cwd=repo, check=True)
         self.depend(app, ("helpers", '{ path = "../helpers" }'))
         self.depend(app, ("gitpkg", '{ git = "%s", rev = "v1" }' % repo.as_posix()))
-        self.depend(app, ("mtest", '"acme.mathx=^1"'), dev=True)
+        self.depend(app, ("mtest", '"acme.mathx=^alpha-1"'), dev=True)
         self.assertEqual((app / ".flywheel-modules" / "helpers.link").read_text().strip(), str(helpers.resolve()))
         self.assertIn("commit = ", (app / "pulley.lock").read_text())
         self.pulley("pull", "--production", cwd=app)
@@ -250,7 +263,7 @@ class CommandTests(unittest.TestCase):
             program = app / "app.fw"
             program.write_text("import geo\nimport mathx\nimport helpers\nimport gitpkg\n"
                                "print geo.area(3, 4), mathx.version(), helpers.hi(), gitpkg.tag()\n")
-            self.assertEqual(self.run_flywheel(program), "12 1.0.0 hi git\n")
+            self.assertEqual(self.run_flywheel(program), "12 alpha-1 hi git\n")
 
         # Removing a dependency removes what only it needed.
         self.pulley("remove", "geo", "helpers", "gitpkg", "mtest", cwd=app)
@@ -261,15 +274,15 @@ class CommandTests(unittest.TestCase):
         self.publish_math()
         app = self.root / "app"
         self.pulley("new", app, "--author", "acme")
-        self.depend(app, "acme.mathx=^1")
-        self.assertIn('version = "1.1.0"', (app / "pulley.lock").read_text())
+        self.depend(app, "acme.mathx=^alpha-1")
+        self.assertIn('version = "alpha-2"', (app / "pulley.lock").read_text())
         # A newer compatible release does not move a locked project until `update`.
-        self.package("mathx", "1.2.0", "function version returns string\n    return \"1.2.0\"\nend\n")
+        self.package("mathx", "alpha-3", "function version returns string\n    return \"alpha-3\"\nend\n")
         self.pulley("pull", cwd=app)
-        self.assertIn('version = "1.1.0"', (app / "pulley.lock").read_text())
-        self.assertIn("1.1.0 -> 1.2.0", self.pulley("update", cwd=app).stdout)
+        self.assertIn('version = "alpha-2"', (app / "pulley.lock").read_text())
+        self.assertIn("alpha-2 -> alpha-3", self.pulley("update", cwd=app).stdout)
         # A release whose contents changed after locking is refused.
-        archive = self.root / "registry" / "dstbs" / "acme" / "mathx" / "1.2.0.tar.gz"
+        archive = self.root / "registry" / "dstbs" / "acme" / "mathx" / "alpha-3.tar.gz"
         original = archive.read_bytes()
         archive.write_bytes(original + b"\0")
         shutil.rmtree(self.root / "cache")
@@ -281,7 +294,7 @@ class CommandTests(unittest.TestCase):
         self.pulley("pull", cwd=app)
         # --frozen refuses a manifest that the lock does not match.
         manifest = app / "pulley.toml"
-        manifest.write_text(manifest.read_text().replace("[dependencies]", '[dependencies]\nextra = "acme.mathx=^1"'))
+        manifest.write_text(manifest.read_text().replace("[dependencies]", '[dependencies]\nextra = "acme.mathx=^alpha-1"'))
         result = self.pulley("pull", "--frozen", cwd=app, check=False)
         self.assertIn("disagree", result.stderr)
 
@@ -290,7 +303,7 @@ class CommandTests(unittest.TestCase):
         directory = self.root / "work" / f"{name}-{version}"
         self.pulley("new", directory, "--author", "acme", "--name", name)
         manifest = directory / "pulley.toml"
-        text = manifest.read_text().replace('version = "0.1.0"', f'version = "{version}"')
+        text = manifest.read_text().replace('version = "alpha-1"', f'version = "{version}"')
         manifest.write_text(text + "\n[commands]\n" + "".join(f'{c} = "bin/cli_{c}.fw"\n' for c in commands))
         (directory / f"{name}.fw").write_text(f'function version returns string\n    return "{version}"\nend\n')
         (directory / "bin").mkdir()
@@ -311,25 +324,25 @@ class CommandTests(unittest.TestCase):
     def test_installs_and_commands(self):
         self.pulley("registry", self.local)
         self.publish_math()
-        self.tool("greet", "1.0.0", ["greet", "hi"], ["acme.mathx=~1.0"])
+        self.tool("greet", "alpha-1", ["greet", "hi"], ["acme.mathx=~alpha-1"])
         exe = ".cmd" if os.name == "nt" else ""
         bin_dir, installs = self.root / "bin", self.root / "data" / "installs"
 
         # A user install: its own environment, with launchers for its commands.
         self.pulley("pull", "acme.greet", "-b")
         self.assertTrue((installs / "greet" / ".flywheel-modules" / "mathx" / "mathx.fw").is_file())
-        self.assertIn('version = "1.0.0"', (installs / "greet" / "pulley.lock").read_text())
+        self.assertIn('version = "alpha-1"', (installs / "greet" / "pulley.lock").read_text())
         result = self.launch(bin_dir / f"greet{exe}", "a", "b c")
-        self.assertEqual(result.stdout, "greet 1.0.0 1.0.0 a,b c\n", result.stderr)
+        self.assertEqual(result.stdout, "greet alpha-1 alpha-1 a,b c\n", result.stderr)
         self.assertEqual(result.returncode, 2)
-        self.assertIn("hi 1.0.0", self.launch(bin_dir / f"hi{exe}").stdout)
-        self.assertIn("greet acme.greet=1.0.0: greet, hi", self.pulley("list", "--user").stdout)
+        self.assertIn("hi alpha-1", self.launch(bin_dir / f"hi{exe}").stdout)
+        self.assertIn("greet acme.greet=alpha-1: greet, hi", self.pulley("list", "--user").stdout)
 
         # -b installs only the commands, and a project's requirements don't meet theirs.
         app = self.root / "app"
         self.pulley("new", app, "--author", "acme")
         self.depend(app, "acme.mathx=^2")
-        self.assertIn('version = "1.0.0"', (installs / "greet" / "pulley.lock").read_text())
+        self.assertIn('version = "alpha-1"', (installs / "greet" / "pulley.lock").read_text())
         self.assertFalse((self.root / "flywheel-home" / "modules").exists())
         # Inside a project, `pull author.name` doesn't touch its pulley.toml.
         before = (app / "pulley.toml").read_text()
@@ -344,22 +357,22 @@ class CommandTests(unittest.TestCase):
         self.assertFalse((installs / "geo").exists())
 
         # Commands that belong to another install, or to no install, aren't overwritten.
-        self.tool("salute", "1.0.0", ["hi"], ["acme.mathx=^1"])
+        self.tool("salute", "alpha-1", ["hi"], ["acme.mathx=^alpha-1"])
         result = self.pulley("pull", "acme.salute", "-b", check=False)
         self.assertIn("already installed by greet", result.stderr)
         self.assertIn("greet", (bin_dir / f"hi{exe}").read_text())
         self.pulley("pull", "acme.salute", "-b", "--force")
-        self.assertIn("hi 1.0.0 1.1.0", self.launch(bin_dir / f"hi{exe}").stdout)
-        self.assertNotIn("hi", self.pulley("list").stdout.split("greet acme.greet=1.0.0:")[1].split("\n")[0])
+        self.assertIn("hi alpha-1 alpha-2", self.launch(bin_dir / f"hi{exe}").stdout)
+        self.assertNotIn("hi", self.pulley("list").stdout.split("greet acme.greet=alpha-1:")[1].split("\n")[0])
         (bin_dir / f"other{exe}").write_text("not pulley's")
-        self.tool("other", "1.0.0", ["other"], ["acme.mathx=^1"])
+        self.tool("other", "alpha-1", ["other"], ["acme.mathx=^alpha-1"])
         self.assertIn("wasn't installed by Pulley", self.pulley("pull", "acme.other", "-b", check=False).stderr)
         self.assertEqual((bin_dir / f"other{exe}").read_text(), "not pulley's")
 
         # Updating an install moves it to the newest release.
-        self.tool("greet", "1.1.0", ["greet"], ["acme.mathx=~1.0"])
-        self.assertIn("greet: 1.0.0 -> 1.1.0", self.pulley("update", "--user", "greet").stdout)
-        self.assertIn("greet 1.1.0", self.launch(bin_dir / f"greet{exe}").stdout)
+        self.tool("greet", "alpha-2", ["greet"], ["acme.mathx=~alpha-1"])
+        self.assertIn("greet: alpha-1 -> alpha-2", self.pulley("update", "--user", "greet").stdout)
+        self.assertIn("greet alpha-2", self.launch(bin_dir / f"greet{exe}").stdout)
 
         # Uninstalling by a command name removes the install and only its own launchers.
         self.pulley("uninstall", "greet")
@@ -372,23 +385,23 @@ class CommandTests(unittest.TestCase):
         # A system install: the Flywheel installation's bin, next to flywheel.
         home = self.root / "flywheel-home"
         self.pulley("pull", "--system", "acme.greet", "-b")
-        self.assertIn("greet 1.1.0", self.launch(home / "bin" / f"greet{exe}").stdout)
+        self.assertIn("greet alpha-2", self.launch(home / "bin" / f"greet{exe}").stdout)
         self.assertTrue((home / "pulley" / "installs" / "greet" / "pulley.lock").is_file())
-        self.assertIn("greet acme.greet=1.1.0: greet", self.pulley("list", "--system").stdout)
+        self.assertIn("greet acme.greet=alpha-2: greet", self.pulley("list", "--system").stdout)
         self.pulley("uninstall", "--system", "greet")
         self.assertFalse((home / "bin" / f"greet{exe}").exists())
 
         # A path install copies the package, so it keeps working when the directory changes.
-        source = self.root / "work" / "greet-1.1.0"
+        source = self.root / "work" / "greet-alpha-2"
         self.pulley("pull", "--path", source, "-b")
         shutil.rmtree(source)
-        self.assertIn("greet 1.1.0", self.launch(bin_dir / f"greet{exe}").stdout)
+        self.assertIn("greet alpha-2", self.launch(bin_dir / f"greet{exe}").stdout)
 
     @unittest.skipUnless(FLYWHEEL, "needs flywheel")
     def test_libraries(self):
         self.pulley("registry", self.local)
         self.publish_math()
-        self.tool("greet", "1.0.0", ["greet"], ["acme.mathx=~1.0"])
+        self.tool("greet", "alpha-1", ["greet"], ["acme.mathx=~alpha-1"])
         exe = ".cmd" if os.name == "nt" else ""
         modules, installs = self.root / "flywheel-home" / "modules", self.root / "data" / "installs"
         program = self.root / "anywhere" / "prog.fw"
@@ -402,7 +415,7 @@ class CommandTests(unittest.TestCase):
                          (installs / "geo" / ".flywheel-modules" / "geo").resolve())
         self.assertFalse((modules / "mathx.link").exists())  # geo's own, not everyone's
         self.assertEqual(self.run_flywheel(program), "12\n")
-        self.assertIn("geo acme.geo=1.0.0: library", self.pulley("list", "--user").stdout)
+        self.assertIn("geo acme.geo=alpha-1: library", self.pulley("list", "--user").stdout)
 
         # A package with commands: without a terminal to ask, only the library (and a hint).
         result = self.pulley("pull", "acme.greet")
@@ -412,7 +425,7 @@ class CommandTests(unittest.TestCase):
         # Pulling again with -b adds the commands and keeps the library; -y does both at once.
         self.pulley("pull", "acme.greet", "-b")
         self.assertTrue((modules / "greet.link").is_file())
-        self.assertIn("greet 1.0.0", self.launch(self.root / "bin" / f"greet{exe}").stdout)
+        self.assertIn("greet alpha-1", self.launch(self.root / "bin" / f"greet{exe}").stdout)
         self.pulley("uninstall", "greet")
         self.assertFalse((modules / "greet.link").exists())
         self.pulley("pull", "acme.greet", "-y")
@@ -426,9 +439,9 @@ class CommandTests(unittest.TestCase):
         self.assertFalse((installs / "taken").exists())
 
         # Updating keeps it a library; uninstalling removes the link.
-        self.package("geo", "1.1.0", "import mathx\nfunction area(int w, int h) returns int\n"
-                     "    return mathx.double_it(w * h)\nend\n", ["acme.mathx=~1.0"])
-        self.assertIn("geo: 1.0.0 -> 1.1.0", self.pulley("update", "--user", "geo").stdout)
+        self.package("geo", "alpha-2", "import mathx\nfunction area(int w, int h) returns int\n"
+                     "    return mathx.double_it(w * h)\nend\n", ["acme.mathx=~alpha-1"])
+        self.assertIn("geo: alpha-1 -> alpha-2", self.pulley("update", "--user", "geo").stdout)
         self.assertEqual(self.run_flywheel(program), "24\n")
         self.pulley("uninstall", "geo")
         self.assertFalse((modules / "geo.link").exists())
@@ -438,18 +451,18 @@ class CommandTests(unittest.TestCase):
     def test_project_commands(self):
         self.pulley("registry", self.local)
         self.publish_math()
-        self.tool("greet", "1.0.0", ["greet"], ["acme.mathx=~1.0"])
+        self.tool("greet", "alpha-1", ["greet"], ["acme.mathx=~alpha-1"])
         app = self.root / "app"
         self.pulley("new", app, "--author", "acme")
         self.depend(app, "acme.greet")
         self.assertTrue((app / ".flywheel-modules" / ".bin").is_dir())
         result = self.pulley("run", "greet", "x", cwd=app, check=False)
-        self.assertEqual(result.stdout, "greet 1.0.0 1.0.0 x\n", result.stderr)
+        self.assertEqual(result.stdout, "greet alpha-1 alpha-1 x\n", result.stderr)
         self.assertEqual(result.returncode, 1)
         # Scripts find the dependencies' commands on PATH.
         manifest = app / "pulley.toml"
         manifest.write_text(manifest.read_text().replace("[scripts]", "[scripts]\nsay = \"greet from-script\""))
-        self.assertIn("greet 1.0.0 1.0.0 from-script", self.pulley("run", "say", cwd=app, check=False).stdout)
+        self.assertIn("greet alpha-1 alpha-1 from-script", self.pulley("run", "say", cwd=app, check=False).stdout)
         self.assertIn("greet: a command of a dependency", self.pulley("run", cwd=app).stdout)
         self.pulley("remove", "greet", cwd=app)
         self.assertFalse((app / ".flywheel-modules" / ".bin").exists())
@@ -469,7 +482,7 @@ class CommandTests(unittest.TestCase):
         self.assertIn("inside the package", self.pulley("pack", cwd=project, check=False).stderr)
         manifest.write_text(text + '\n[commands]\npkg = "cli.fw"\n')
         self.pulley("pack", cwd=project)
-        self.depend(project, "acme.pkg=^1", install=False)
+        self.depend(project, "acme.pkg=^alpha-1", install=False)
         self.assertIn("is this package itself", self.pulley("pack", cwd=project, check=False).stderr)
 
     def test_http_registry(self):
@@ -487,7 +500,7 @@ class CommandTests(unittest.TestCase):
                 self.pulley("login", "acme", "--password-stdin", "--registry", server.address, input="s3cret\n")
                 self.assertIn("acme @ " + server.address, self.pulley("whoami", "--registry", server.address).stdout)
                 self.publish_math(registry=server.address)
-                self.assertEqual(list(server.releases[("acme", "mathx")]), ["1.0.0", "1.1.0", "2.0.0"])
+                self.assertEqual(list(server.releases[("acme", "mathx")]), ["alpha-1", "alpha-2", "beta-1"])
                 info = self.pulley("info", "acme.mathx", "--registry", server.address).stdout
                 self.assertIn("SHA-256:", info)
 
@@ -497,12 +510,12 @@ class CommandTests(unittest.TestCase):
                 manifest.write_text(manifest.read_text() + f'\n[registry]\ndefault = "{server.address}"\n')
                 if list_releases:
                     self.depend(app, "acme.geo")
-                    self.assertIn('version = "1.0.0"', (app / "pulley.lock").read_text())
+                    self.assertIn('version = "alpha-1"', (app / "pulley.lock").read_text())
                 else:
                     # A registry that reports only `latest`: exact versions still resolve.
-                    self.depend(app, "acme.geo=1.0.0", "acme.mathx=1.0.0")
-                    result = self.depend(app, "acme.mathx=^1.1", check=False)
-                    self.assertIn("Available: 2.0.0", result.stderr)
+                    self.depend(app, "acme.geo=alpha-1", "acme.mathx=alpha-1")
+                    result = self.depend(app, "acme.mathx=^alpha-2", check=False)
+                    self.assertIn("Available: beta-1", result.stderr)
                 self.assertTrue((app / ".flywheel-modules" / "mathx" / "mathx.fw").is_file())
                 if FLYWHEEL:
                     program = app / "app.fw"
@@ -530,12 +543,35 @@ class CommandTests(unittest.TestCase):
         result = self.pulley("publish", "--registry", self.local, cwd=project, check=False)
         self.assertIn("main module lib.fw does not exist", result.stderr)
 
+    def test_publish_needs_sbv(self):
+        project = self.root / "lib"
+        self.pulley("new", project, "--author", "acme")
+        manifest = project / "pulley.toml"
+        text = manifest.read_text()
+        self.assertIn('version = "alpha-1"', text)
+        manifest.write_text(text.replace('version = "alpha-1"', 'version = "1.0.0"'))
+        result = self.pulley("publish", "--registry", self.local, cwd=project, check=False)
+        self.assertIn("is not a Stage-Based Version", result.stderr)
+        # The numerical notation publishes in SBV notation, pulley.toml included.
+        manifest.write_text(text.replace('version = "alpha-1"', 'version = "2.3"'))
+        self.assertIn("version 2.3 publishes as beta-3", self.pulley("publish", "--registry", self.local, cwd=project).stdout)
+        archive = self.root / "registry" / "dstbs" / "acme" / "lib" / "beta-3.tar.gz"
+        with tarfile.open(archive) as tar:
+            member = next(m for m in tar.getmembers() if m.name.endswith("pulley.toml"))
+            self.assertIn('version = "beta-3"', tar.extractfile(member).read().decode())
+        self.assertIn('version = "2.3"', manifest.read_text())  # the project's own file is untouched
+        app = self.root / "app"
+        self.pulley("new", app, "--author", "acme")
+        self.pulley("registry", self.local, cwd=app)
+        self.depend(app, ("lib", '"acme.lib=2.3"'))
+        self.assertIn('version = "beta-3"', (app / "pulley.lock").read_text())
+
     def test_remove_keeps_shared_dependencies(self):
         self.pulley("registry", self.local)
         self.publish_math()
         app = self.root / "app"
         self.pulley("new", app, "--author", "acme")
-        self.depend(app, "acme.geo", "acme.mathx=~1.0")
+        self.depend(app, "acme.geo", "acme.mathx=~alpha-1")
         self.pulley("remove", "geo", cwd=app)
         modules = app / ".flywheel-modules"
         self.assertFalse((modules / "geo").exists())
@@ -570,23 +606,23 @@ class CommandTests(unittest.TestCase):
     def test_update_named_package(self):
         self.pulley("registry", self.local)
         self.publish_math()
-        self.package("textx", "1.0.0", 'function v returns string\n    return "1.0.0"\nend\n')
+        self.package("textx", "alpha-1", 'function v returns string\n    return "alpha-1"\nend\n')
         app = self.root / "app"
         self.pulley("new", app, "--author", "acme")
-        self.depend(app, "acme.mathx=^1", "acme.textx=^1")
-        self.package("mathx", "1.2.0", 'function version returns string\n    return "1.2.0"\nend\n')
-        self.package("textx", "1.1.0", 'function v returns string\n    return "1.1.0"\nend\n')
+        self.depend(app, "acme.mathx=^alpha-1", "acme.textx=^alpha-1")
+        self.package("mathx", "alpha-3", 'function version returns string\n    return "alpha-3"\nend\n')
+        self.package("textx", "alpha-2", 'function v returns string\n    return "alpha-2"\nend\n')
         output = self.pulley("update", "mathx", cwd=app).stdout
-        self.assertIn("1.1.0 -> 1.2.0", output)
+        self.assertIn("alpha-2 -> alpha-3", output)
         lock = (app / "pulley.lock").read_text()
-        self.assertIn('distribution = "acme.mathx"\nversion = "1.2.0"', lock)
-        self.assertIn('distribution = "acme.textx"\nversion = "1.0.0"', lock)  # not named, not moved
+        self.assertIn('distribution = "acme.mathx"\nversion = "alpha-3"', lock)
+        self.assertIn('distribution = "acme.textx"\nversion = "alpha-1"', lock)  # not named, not moved
         result = self.pulley("update", "nosuch", cwd=app, check=False)
         self.assertIn("not installed: nosuch", result.stderr)
 
     def test_only_flywheel_packages_install(self):
         # A distribution without a pulley.toml (a Hydrogen one, say) is not a Flywheel package.
-        archive = self.root / "registry" / "dstbs" / "acme" / "tool" / "1.0.0.tar.gz"
+        archive = self.root / "registry" / "dstbs" / "acme" / "tool" / "alpha-1.tar.gz"
         archive.parent.mkdir(parents=True)
         with tarfile.open(archive, "w:gz") as tar:
             for path, data in ((".sourcepkg", b'{"command": "tool"}'), ("tool.py", b"print(1)\n")):
@@ -614,7 +650,7 @@ class CommandTests(unittest.TestCase):
 
     def test_unsafe_archives_are_refused(self):
         def publish_raw(name, add_members):
-            archive = self.root / "registry" / "dstbs" / "acme" / name / "1.0.0.tar.gz"
+            archive = self.root / "registry" / "dstbs" / "acme" / name / "alpha-1.tar.gz"
             archive.parent.mkdir(parents=True)
             with tarfile.open(archive, "w:gz") as tar:
                 add_members(tar)
@@ -680,7 +716,7 @@ class CommandTests(unittest.TestCase):
 
         self.pulley("registry", self.local)
         self.publish_math()
-        self.depend(app, "acme.mathx=1.0.0")
+        self.depend(app, "acme.mathx=alpha-1")
         self.assertIn("1 release(s)", self.pulley("cache").stdout)
         self.pulley("cache", "clean")
         self.assertFalse((self.root / "cache").exists())

@@ -21,7 +21,7 @@ from . import manifest as manifests
 from .config import MANIFEST, PulleyError, cache_dir
 from .progress import progress, size
 from .registry import Registry, extract
-from .versions import Constraint, best
+from .versions import Constraint, best, sbv
 
 ROOT = ("root",)
 
@@ -221,6 +221,9 @@ class Resolver:
         if locked and all(c.allows(locked["version"]) for c in constraints):
             return locked["version"]
         exact = {c.exact() for c in constraints if c.exact()}
+        # `=1.4` may be published as alpha-4 (SBV): look it up in the version list.
+        if len(exact) == 1 and sbv(next(iter(exact))) not in (None, next(iter(exact))):
+            exact = set()
         if len(exact) == 1 and all(c.allows(next(iter(exact))) for c in constraints):
             # Taken as is: a registry may list only its latest release; fetching checks it exists.
             return next(iter(exact))

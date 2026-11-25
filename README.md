@@ -64,7 +64,7 @@ the installation's `modules`. Each package is a directory named by its import na
 [package]
 name = "app"              # the distribution name
 author = "danny"          # your Distrobase username; publishes as danny.app
-version = "0.1.0"
+version = "alpha-1"       # a Stage-Based Version; see "Versions" below
 description = "An example"
 main = "app.fw"           # what `import app` loads (default <name>.fw)
 license = "MIT"
@@ -105,8 +105,11 @@ distributions are reported as a conflict.
 | `1.2.*` | `>=1.2, <1.3` |
 | `>=1.0, <2`, `!=1.4` | every comparison together |
 
-Versions are dotted numbers with an optional pre-release (`2.0.0-beta.1`); pre-releases are
-chosen only when a constraint names one. `pulley pull <package>` without a constraint pulls `^`
+Constraints can also be written in SBV notation (below): `^alpha-2` is `>=1.2, <2`, so it stays
+within the alpha stage, `~alpha-2` is exactly `alpha-2`, and `>=beta-1` is any beta or later
+release. Versions are dotted numbers with an optional pre-release (`2.0.0-beta.1`) or SBV
+versions (`alpha-4`, the same version as `1.4`); pre-releases are chosen only when a constraint
+names one. `pulley pull <package>` without a constraint pulls `^`
 the newest release, so `pulley update` stays on compatible ones.
 
 ## Resolution and the lock file
@@ -117,7 +120,7 @@ satisfies all of them, Pulley names each requirement and who made it:
 
 ```text
 error: no version of acme.mathx on wednesware.org satisfies every requirement:
-^2.0 (by app); ~1.0 (by acme.geo=1.0.0). Available: 1.0.0, 1.1.0, 2.0.0
+^beta-1 (by app); ~alpha-1 (by acme.geo=alpha-1). Available: alpha-1, alpha-2, beta-1
 ```
 
 A failed `pulley pull` leaves `pulley.lock` and `.flywheel-modules` unchanged. `pulley.lock` records the chosen version of every
@@ -173,9 +176,28 @@ pulley publish --dry-run       # list the files that would be published
 pulley publish
 ```
 
+#### Versions
+
+Pulley publishes [Stage-Based Versions](https://github.com/pmorphia/sbv) (SBV) only. `[package]
+version` names a stage and the release within it:
+
+| Stage | SBV notation | Numerical notation |
+|---|---|---|
+| Concept | `0-1`, `0-2`, … | `0.1`, `0.2`, … |
+| Alpha | `alpha-1`, … | `1.1`, … |
+| Beta | `beta-1`, … | `2.1`, … |
+| Gamma (stable) | `gamma-1`, … | `3.1`, … |
+| Delta (maintenance) | `delta-1`, … | `4.1`, … |
+| Epsilon (discontinued) | `epsilon-1`, … | `5.1`, … |
+
+Either notation works in `pulley.toml`, but releases are always published in SBV notation: with
+`version = "1.4"`, `pulley publish` publishes `alpha-4` (and the published `pulley.toml` says
+`alpha-4`; your own file is left as written). Anything else, such as `1.0.0`, `6.1` or `alpha-0`,
+is refused. Releases published before this rule keep working as dependencies.
+
 A release contains the project's files except `.git`, `.flywheel-modules`, `pulley.lock`, and
-`[package] exclude` patterns. Publishing checks that the name, author, version, and main module
-are set and that no dependency is a local path or the package itself. Registry credentials are kept per registry: in
+`[package] exclude` patterns. Publishing checks that the name, author, and main module
+are set, that the version is an SBV version, and that no dependency is a local path or the package itself. Registry credentials are kept per registry: in
 the system keyring when `keyring` is installed, otherwise in a file readable only by you
 (`credentials.json` in Pulley's configuration directory). `PULLEY_AUTH_USER` and
 `PULLEY_AUTH_PASSWORD` (or Hydrogen's `DISTROBASE_AUTH_USER` / `DISTROBASE_AUTH_PASSWORD`)

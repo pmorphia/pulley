@@ -5,7 +5,7 @@
     [package]
     name = "app"              # the distribution name on Distrobase
     author = "danny"          # the Distrobase author (account) that publishes it
-    version = "0.1.0"
+    version = "alpha-1"       # a Stage-Based Version (github.com/pmorphia/sbv); 1.4 is alpha-4
     description = "An example"
     main = "app.fw"           # the module `import app` loads; default <name>.fw
     license = "MIT"
@@ -170,7 +170,7 @@ class Manifest:
     directory: Path
     name: str = ""
     author: str = ""
-    version: str = "0.1.0"
+    version: str = "alpha-1"
     description: str = ""
     main: str = ""
     license: str = ""
@@ -208,7 +208,7 @@ def load(directory: Path) -> Manifest:
         directory=Path(directory).resolve(),
         name=str(package.get("name", "")),
         author=str(package.get("author", "")),
-        version=str(package.get("version", "0.1.0")),
+        version=str(package.get("version", "alpha-1")),
         description=str(package.get("description", "")),
         main=str(package.get("main", "")),
         license=str(package.get("license", "")),
@@ -248,7 +248,7 @@ def template(name: str, author: str, main: str) -> str:
         "[package]\n"
         f"name = {_quote(name)}\n"
         f"author = {_quote(author)}\n"
-        'version = "0.1.0"\n'
+        'version = "alpha-1"\n'
         'description = ""\n'
         f"main = {_quote(main)}\n"
         "\n[dependencies]\n"

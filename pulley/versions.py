@@ -18,6 +18,24 @@ Constraints:
 
 Pre-releases match only when a comparison in the constraint itself names a pre-release
 with the same numbers, as in npm and Cargo.
+
+Stage-Based Versioning (SBV, https://github.com/pmorphia/sbv) versions are understood too, and
+are what ``pulley publish`` requires. ``<stage>-<n>`` is the n-th release of a stage, and its
+numerical notation is ``<major>.<n>``:
+
+=========  ==============  =========
+Stage      SBV notation    Numerical
+=========  ==============  =========
+Concept    ``0-n``         ``0.n``
+Alpha      ``alpha-n``     ``1.n``
+Beta       ``beta-n``      ``2.n``
+Gamma      ``gamma-n``     ``3.n``
+Delta      ``delta-n``     ``4.n``
+Epsilon    ``epsilon-n``   ``5.n``
+=========  ==============  =========
+
+``alpha-4`` and ``1.4`` are the same version, so constraints can use either: ``^alpha-2``
+(``>=1.2, <2``) stays within the alpha stage, ``>=beta-1`` is any beta or later stage.
 """
 
 from __future__ import annotations
@@ -27,6 +45,31 @@ import re
 from dataclasses import dataclass
 
 _VERSION = re.compile(r"^v?(\d+(?:\.\d+)*)(?:[-+]?([0-9A-Za-z][0-9A-Za-z.-]*))?$")
+
+# SBV stages, by major version number.
+STAGES = ("0", "alpha", "beta", "gamma", "delta", "epsilon")
+_SBV = re.compile(r"^(0|alpha|beta|gamma|delta|epsilon)-(\d+)$", re.IGNORECASE)
+_SBV_NUMERIC = re.compile(r"^(\d+)\.(\d+)$")
+
+
+def sbv(text: str) -> str | None:
+    """The SBV notation (``alpha-4``) of an SBV version (``alpha-4``, ``Alpha-4`` or ``1.4``).
+
+    None if it is not one: a stage other than 0 to 5 (epsilon), more or fewer than two parts, or
+    a release number below 1.
+    """
+    text = str(text).strip()
+    match = _SBV.match(text) or _SBV_NUMERIC.match(text)
+    if not match:
+        return None
+    stage, number = match.group(1).lower(), int(match.group(2))
+    if stage.isdigit():
+        if int(stage) >= len(STAGES) or stage != str(int(stage)):
+            return None
+        stage = STAGES[int(stage)]
+    if number < 1 or match.group(2) != str(number):
+        return None
+    return f"{stage}-{number}"
 
 
 @functools.total_ordering
@@ -40,6 +83,12 @@ class Version:
     @staticmethod
     def parse(text: str) -> "Version":
         text = str(text).strip()
+        stage = _SBV.match(text)
+        if stage:  # alpha-4 is 1.4
+            numbers = (STAGES.index(stage.group(1).lower()), int(stage.group(2)))
+            while len(numbers) > 1 and numbers[-1] == 0:
+                numbers = numbers[:-1]
+            return Version(text, numbers, (), True)
         match = _VERSION.match(text)
         if not match:
             return Version(text, (), (), False)
@@ -110,7 +159,7 @@ class Constraint:
         if self.text in ("*", "latest", ""):
             return
         normalized = re.sub(r"(>=|<=|==|!=|>|<|=)\s+", r"\1", self.text)
-        for part in re.split(r"[,\s]+(?=[<>=!^~\d*v])", normalized):
+        for part in re.split(r"[,\s]+(?=[<>=!^~\d*v]|(?:alpha|beta|gamma|delta|epsilon)-)", normalized, flags=re.IGNORECASE):
             part = part.strip().rstrip(",").strip()
             if part:
                 self.comparisons.extend(self._parse(part))
@@ -122,7 +171,7 @@ class Constraint:
             base = Version.parse(part[1:])
             if not base.numeric:
                 raise ConstraintError(f"invalid version constraint '{self.text}'")
-            given = len(part[1:].lstrip("v").split("-")[0].split("."))
+            given = 2 if _SBV.match(part[1:]) else len(part[1:].lstrip("v").split("-")[0].split("."))
             if part[0] == "^":
                 # The first non-zero component (of those written) may not change.
                 index = 0

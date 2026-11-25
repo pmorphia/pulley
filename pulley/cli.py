@@ -566,7 +566,10 @@ def cmd_publish(args) -> None:
     manifest = manifests.load(project)
     packaging.check(manifest)
     registry = Registry(_registry_name(args, manifest))
-    address = registry.address(manifest.author, manifest.name, manifest.version)
+    version = packaging.release_version(manifest)
+    if version != manifest.version:
+        say(f"version {manifest.version} publishes as {version} (Stage-Based Versioning)")
+    address = registry.address(manifest.author, manifest.name, version)
     start = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="pulley-publish-") as temporary:
         staged = Path(temporary) / manifest.name
@@ -589,10 +592,10 @@ def cmd_publish(args) -> None:
         if not registry.local and username != manifest.author:
             warn(f"publishing as '{username}' to author '{manifest.author}'; the registry decides whether that is allowed")
         progress.status(f"uploading {address}")
-        for line in registry.publish(staged, manifest.author, manifest.name, manifest.version, username, password,
+        for line in registry.publish(staged, manifest.author, manifest.name, version, username, password,
                                      verbose=args.verbose):
             step(line)
-    done(f"published {manifest.author}.{manifest.name}={manifest.version} to {registry} in {_took(start)}")
+    done(f"published {manifest.author}.{manifest.name}={version} to {registry} in {_took(start)}")
     if manifest.unlisted:
         say("it is unlisted: installable by its address, but left out of package listings")
 
@@ -603,7 +606,7 @@ def cmd_pack(args) -> None:
         raise PulleyError(f"no {MANIFEST} here or in a parent directory")
     manifest = manifests.load(project)
     packaging.check(manifest)
-    archive = Path(args.output or f"{manifest.author}.{manifest.name}-{manifest.version}.tar.gz").resolve()
+    archive = Path(args.output or f"{manifest.author}.{manifest.name}-{packaging.release_version(manifest)}.tar.gz").resolve()
     progress.status(f"packing {archive.name}")
     files = packaging.pack(manifest, archive)
     done(f"wrote {archive} ({len(files)} file(s), {archive.stat().st_size} bytes)")
